@@ -894,6 +894,15 @@ class LocalEnvironment(BaseEnvironment):
         if login:
             cmd_string = _prepend_shell_init(cmd_string, _resolve_shell_init_files())
         args = [bash, *(["-l"] if login else []), "-c", cmd_string]
+        if not login:
+            # Foreground execute() commands: when terminal.systemd_scope is on,
+            # run in a transient user scope so builds/dev servers are charged
+            # to their own cgroup instead of hermes-gateway.service. Login-shell
+            # env snapshots stay unwrapped (they must read the real environment).
+            with contextlib.suppress(Exception):
+                from tools.systemd_scope import wrap_in_systemd_scope
+
+                args = wrap_in_systemd_scope(args, unit_prefix="hermes-terminal-fg")
         self._recover_cwd()
         proc = subprocess.Popen(
             args, text=True, env=_make_run_env(self.env), encoding="utf-8", errors="replace",

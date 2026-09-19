@@ -355,6 +355,13 @@ DEFAULT_CONFIG = {
         # Keep a long-lived bash shell across execute() calls so cwd/env/shell variables survive.
         # Applies to non-local backends (SSH); local is opt-in via TERMINAL_LOCAL_PERSISTENT env.
         "persistent_shell": True,
+        # Linux/user-systemd only: launch local terminal subprocesses through
+        # `systemd-run --user --scope` so builds, dev servers, Gradle daemons,
+        # LSPs, and their page cache are charged to transient tool scopes
+        # instead of the long-lived hermes-gateway.service cgroup. Accounting
+        # only (no MemoryMax on the foreground path). Off by default for
+        # portability; enable on systemd-managed homelab gateways.
+        "systemd_scope": False,
     },
 
     "web": {
