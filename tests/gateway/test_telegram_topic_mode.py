@@ -832,3 +832,94 @@ def test_get_telegram_topic_binding_by_session_returns_binding(tmp_path):
 # Test for session-split thread_id recovery (issue #27166)
 # ---------------------------------------------------------------------------
 
+
+
+# ---------------------------------------------------------------------------
+# /topics listing command (local carry; was July 25 gateway-fix bundle)
+# ---------------------------------------------------------------------------
+
+def _seed_topic_binding(
+    db: SessionDB,
+    *,
+    session_id: str,
+    thread_id: str,
+    title: str,
+    timestamp: float,
+):
+    db.create_session(session_id, source="telegram", user_id="208214988")
+    db.set_session_title(session_id, title)
+    db.append_message(session_id, role="user", content=f"prompt for {title}", timestamp=timestamp)
+    db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id=thread_id,
+        user_id="208214988",
+        session_key=f"agent:main:telegram:dm:208214988:{thread_id}",
+        session_id=session_id,
+        managed_mode="auto",
+    )
+
+
+@pytest.mark.asyncio
+async def test_topics_command_lists_bindings_newest_first(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    _seed_topic_binding(
+        db,
+        session_id="sess-old",
+        thread_id="100",
+        title="Old Topic",
+        timestamp=100.0,
+    )
+    _seed_topic_binding(
+        db,
+        session_id="sess-new",
+        thread_id="101",
+        title="New Topic",
+        timestamp=200.0,
+    )
+
+    runner = _make_runner(session_db=db)
+    result = await runner._handle_topics_command(_make_event("/topics"))
+
+    assert "Telegram topic mappings — page 1/1 (2 total)" in result
+    assert "Topic `101` — New Topic" in result
+    assert "Session: `sess-new`" in result
+    assert "Topic `100` — Old Topic" in result
+    assert result.index("Topic `101`") < result.index("Topic `100`")
+    db.close()
+
+
+@pytest.mark.asyncio
+async def test_topics_command_paginates_bindings(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    for idx in range(9):
+        _seed_topic_binding(
+            db,
+            session_id=f"sess-{idx}",
+            thread_id=str(100 + idx),
+            title=f"Topic {idx}",
+            timestamp=100.0 + idx,
+        )
+
+    runner = _make_runner(session_db=db)
+    page1 = await runner._handle_topics_command(_make_event("/topics"))
+    page2 = await runner._handle_topics_command(_make_event("/topics 2"))
+
+    assert "page 1/2 (9 total)" in page1
+    assert "Next: `/topics 2`" in page1
+    assert "Topic `108` — Topic 8" in page1
+    assert "Topic `100` — Topic 0" not in page1
+    assert "page 2/2 (9 total)" in page2
+    assert "Prev: `/topics 1`" in page2
+    assert "Topic `100` — Topic 0" in page2
+    db.close()
+
+
+@pytest.mark.asyncio
+async def test_topics_command_rejects_non_numeric_page(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    runner = _make_runner(session_db=db)
+
+    result = await runner._handle_topics_command(_make_event("/topics nope"))
+
+    assert result == "Usage: /topics [page]"
+    db.close()
