@@ -11,6 +11,7 @@ import contextlib
 import dataclasses
 import logging
 import os
+import re
 import shlex
 from typing import Optional, Union
 
@@ -631,6 +632,93 @@ class GatewaySessionCommandsMixin:
         await self.async_session_store.update_session(session_entry.session_key, last_prompt_tokens=0)
 
     # ------------------------------------------------------------------------ /topic
+
+    async def _handle_topics_command(self, event: MessageEvent) -> str:
+        """Handle /topics — list Telegram DM topic → session mappings, newest active first."""
+        source = event.source
+        if source.platform != Platform.TELEGRAM or source.chat_type != "dm":
+            return t("gateway.topic.not_telegram_dm")
+        if not self._session_db:
+            return self._session_db_unavailable_reply()
+
+        # Read-only listing, but it still exposes session ids/titles: same
+        # allowlist bar as /topic (defense in depth).
+        try:
+            if not self._is_user_authorized_for_source(source):
+                return t("gateway.topic.unauthorized")
+        except Exception:
+            logger.debug("Topics auth check failed", exc_info=True)
+
+        raw_args = event.get_command_args().strip()
+        page = 1
+        if raw_args:
+            # Accept `/topics 2` and `/topics page 2`; keep the surface tiny.
+            parts = raw_args.split()
+            candidate = parts[-1] if parts[0].lower() == "page" and len(parts) > 1 else parts[0]
+            try:
+                page = int(candidate)
+            except ValueError:
+                return "Usage: /topics [page]"
+        requested_page = page
+        page = max(1, page)
+        page_size = 8
+
+        rows = await self._session_db.list_telegram_topic_session_bindings_for_chat(
+            chat_id=str(source.chat_id),
+            profile_name=self._telegram_topic_profile_name(source),
+            user_id=str(source.user_id) if source.user_id is not None else None,
+        )
+        if not rows:
+            return (
+                "No Telegram topics are currently bound to Hermes sessions.\n\n"
+                "Create a topic from All Messages, or restore one with `/topic <session-id>`."
+            )
+
+        total_pages = max(1, (len(rows) + page_size - 1) // page_size)
+        page = min(page, total_pages)
+        start = (page - 1) * page_size
+        page_rows = rows[start:start + page_size]
+
+        from datetime import datetime as _dt
+
+        def _fmt_ts(value: object) -> str:
+            try:
+                return _dt.fromtimestamp(float(value)).strftime("%Y-%m-%d %H:%M")
+            except Exception:
+                return "unknown"
+
+        def _one_line(text: object, limit: int = 72) -> str:
+            value = re.sub(r"\s+", " ", str(text or "")).strip()
+            if len(value) > limit:
+                return value[: limit - 1].rstrip() + "…"
+            return value
+
+        lines = [
+            f"Telegram topic mappings — page {page}/{total_pages} ({len(rows)} total)",
+            "",
+        ]
+        for row in page_rows:
+            thread_id = str(row.get("thread_id") or "—")
+            session_id = str(row.get("session_id") or "—")
+            title = _one_line(row.get("title") or row.get("preview") or "Untitled session", 64)
+            mode = str(row.get("managed_mode") or "auto")
+            last_active = _fmt_ts(row.get("last_active") or row.get("updated_at"))
+            lines.extend([
+                f"• Topic `{thread_id}` — {title}",
+                f"  Session: `{session_id}`",
+                f"  Mode: `{mode}` · Last: {last_active}",
+            ])
+        if total_pages > 1:
+            nav = []
+            if page > 1:
+                nav.append(f"Prev: `/topics {page - 1}`")
+            if page < total_pages:
+                nav.append(f"Next: `/topics {page + 1}`")
+            if nav:
+                lines.extend(["", " | ".join(nav)])
+        if requested_page != page:
+            lines.append(f"Requested page {requested_page}; showing page {page}.")
+        return "\n".join(lines)
 
     async def _handle_topic_command(self, event: MessageEvent, args: str = "") -> str:
         """Handle /topic for Telegram DM user-managed topic sessions."""

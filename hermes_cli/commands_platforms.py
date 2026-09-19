@@ -382,7 +382,10 @@ _SLACK_RESERVED_COMMANDS = frozenset({
 # parity test reads this set. Aliases are never pinned ahead of canonicals.
 _SLACK_VIA_HERMES_ONLY = frozenset({
     "topup", "moa", "debug", "egress", "init", "version", "diff", "update", "heartbeat",
-    "refine", "review", "pause", "whoami", "platform", "insights", "login"})
+    "refine", "review", "pause", "whoami", "platform", "insights", "login",
+    # topics: Telegram-DM-specific topic/session mapping list; reached via
+    # /hermes topics on Slack if needed, but native /topics is not useful there.
+    "topics"})
 
 
 def _sanitize_slack_name(raw: str) -> str:
