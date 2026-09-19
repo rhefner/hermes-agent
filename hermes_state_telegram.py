@@ -248,6 +248,57 @@ class SessionTelegramTopicsMixin:
         )
         return [dict(row) for row in rows]
 
+    def list_telegram_topic_session_bindings_for_chat(
+        self, *, chat_id: str, profile_name: str = "default", user_id: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Bindings enriched with session metadata for /topics, newest active first.
+
+        Ordered by the bound session's latest message timestamp, falling back to
+        the binding's own timestamps. Read-only; [] when topic tables are absent
+        (a pre-v3 schema is healed by the shared reader). profile_name is a
+        mandatory filter — under multiplex one state.db serves several bots.
+        """
+        profile_name = _normalize_telegram_topic_profile_name(profile_name)
+        params: List[Any] = [profile_name, str(chat_id)]
+        user_filter = ""
+        if user_id is not None:
+            user_filter = "AND b.user_id = ?"
+            params.append(str(user_id))
+        rows = self._topic_read_all(
+            f"""
+            SELECT
+                b.chat_id,
+                b.thread_id,
+                b.user_id,
+                b.session_key,
+                b.session_id,
+                b.managed_mode,
+                b.linked_at,
+                b.updated_at,
+                s.title,
+                s.source,
+                s.message_count,
+                s.started_at,
+                COALESCE(
+                    {_sql_session_last_active("s")},
+                    b.updated_at,
+                    s.started_at,
+                    b.linked_at
+                ) AS last_active,
+                (
+                    SELECT m.content FROM messages m
+                    WHERE m.session_id = b.session_id AND m.role = 'user'
+                    ORDER BY m.timestamp ASC LIMIT 1
+                ) AS preview
+            FROM telegram_dm_topic_bindings b
+            LEFT JOIN sessions s ON s.id = b.session_id
+            WHERE b.profile_name = ? AND b.chat_id = ? {user_filter}
+            ORDER BY last_active DESC, b.updated_at DESC, CAST(b.thread_id AS INTEGER) DESC
+            """,
+            tuple(params),
+        )
+        return [dict(row) for row in rows]
+
     def get_telegram_topic_binding_by_session(self, *, session_id: str) -> Optional[Dict[str, Any]]:
         """Reverse lookup via the UNIQUE INDEX on session_id; None when unbound."""
         row = self._topic_read_one("""
