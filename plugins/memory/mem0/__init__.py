@@ -4,7 +4,8 @@ Server-side fact extraction and semantic search via the Mem0 Platform API (cloud
 self-hosted Mem0 server (MEM0_HOST, HTTP), or OSS Memory. Secrets live in $HERMES_HOME/.env
 (MEM0_API_KEY, MEM0_HOST); settings in $HERMES_HOME/mem0.json via `hermes memory setup`:
 mode ("platform"|"oss"), host, user_id (canonical id across gateways; unset → gateway-native
-id), agent_id. MEM0_* env vars remain a fallback.
+id), agent_id, read_only ("true" → recall-only: search tools and prefetch only; no writes,
+no automatic turn sync). MEM0_* env vars remain a fallback.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ from __future__ import annotations
 import atexit
 import json
 import logging
+import os
 import threading
 import time
 from contextlib import suppress
@@ -32,6 +34,13 @@ _CLIENT_ERROR_TYPES = ("MemoryNotFoundError", "ValidationError")
 # Placeholder user_id. initialize() treats it as "no operator-configured user_id"
 # so legacy mem0.json files written by the wizard don't override gateway-native ids.
 _DEFAULT_USER_ID = "hermes-user"
+
+
+def _as_bool(value: Any) -> bool:
+    """Parse config/env booleans without treating the string 'false' as true."""
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "1", "yes", "on")
+    return bool(value)
 
 # sync_turn sends the whole turn to the backend for fact extraction. OSS embedding
 # models often have small context windows (bge-small-zh-v1.5: 512 tokens ≈ 500 chars;
@@ -86,6 +95,11 @@ def _load_config() -> dict:
               "agent_id": get_secret("MEM0_AGENT_ID", "") or "hermes", "oss": {}}
     if user_id := get_secret("MEM0_USER_ID", ""):  # only when explicitly configured, so initialize() can fall back to the gateway-native id
         config["user_id"] = user_id
+    # read_only is deliberately non-secret: parse it from plain env BEFORE any
+    # secret-manager lookup so tool-schema indexing (which reads this config
+    # before provider initialization) cannot trigger a secret-resolution failure
+    # just to discover a non-secret recall-only flag.
+    config["read_only"] = os.environ.get("MEM0_READ_ONLY", "false")
     file_cfg = read_json_or_empty(get_hermes_home() / "mem0.json")
     config.update({k: v for k, v in file_cfg.items() if v is not None and v != ""})
     # MEM0_API_KEY authenticates the Platform and self-hosted HTTP backends; pure OSS mode builds its
@@ -116,10 +130,14 @@ TOOL_SCHEMAS = [
             {"memory_id": ("string", "Memory UUID to delete.")}, ["memory_id"]),
 ]
 
-_PROMPT_BODY = (
+_PROMPT_GUIDANCE = (
     "You have persistent memory of this user from past conversations. You should call mem0_search before answering anything that could depend on prior context (the user's preferences, facts, history, people, projects, or earlier decisions) — do not rely on the chat window alone, and do not assume you have no memory.\n"
     "For multi-part or multi-hop questions, run several searches with different wording/angles and follow-up searches on what the first results surface; one search is rarely enough. Keep searching until you have every fact the question needs before you answer.\n"
-    "Tools: mem0_search to find memories, mem0_add to store facts, mem0_update and mem0_delete to manage by ID."
+)
+
+_PROMPT_BODY = (
+    _PROMPT_GUIDANCE
+    + "Tools: mem0_search to find memories, mem0_add to store facts, mem0_update and mem0_delete to manage by ID."
 )
 
 
@@ -135,6 +153,13 @@ class Mem0MemoryProvider(MemoryProvider):
         self._prefetch_done = self._atexit_registered = False
         self._consecutive_failures, self._breaker_open_until = 0, 0.0  # circuit breaker state
         self._breaker_lock, self._sync_lock, self._prefetch_lock = threading.Lock(), threading.Lock(), threading.Lock()
+        # Loaded at construction time because MemoryManager indexes tool schemas
+        # before initialize(). initialize() refreshes it from the full config.
+        # Parse errors default to False (never silently strip write tools).
+        try:
+            self._read_only = _as_bool(_load_config().get("read_only", False))
+        except Exception:
+            self._read_only = False
 
     @property
     def name(self) -> str:
@@ -158,6 +183,7 @@ class Mem0MemoryProvider(MemoryProvider):
             {"key": "host", "description": "Self-hosted Mem0 server URL (leave blank for cloud)", "required": False, "env_var": "MEM0_HOST"},
             {"key": "user_id", "description": "User identifier", "default": "hermes-user"},
             {"key": "agent_id", "description": "Agent identifier", "default": "hermes"},
+            {"key": "read_only", "description": "Recall only; disable all Mem0 writes", "default": "false", "choices": ["true", "false"]},
             {"key": "rerank", "description": "Enable reranking for recall", "default": "false", "choices": ["true", "false"]},
         ]
 
@@ -234,6 +260,7 @@ class Mem0MemoryProvider(MemoryProvider):
         # Persisted rerank preference: default for mem0_search when the model omits ``rerank``. Platform-only.
         _rr = cfg.get("rerank", False)
         self._rerank_default = _rr.lower() in ("true", "1", "yes") if isinstance(_rr, str) else bool(_rr)
+        self._read_only = _as_bool(cfg.get("read_only", False))
         self._channel = kwargs.get("platform") or "cli"
         self._sync_max_chars = int(cfg.get("sync_max_chars") or _SYNC_MSG_MAX_CHARS)
         self._backend = self._create_backend()
@@ -254,7 +281,13 @@ class Mem0MemoryProvider(MemoryProvider):
         # Mirror _create_backend precedence (oss > host > platform). Rerank is a Mem0 Platform feature only.
         mode_label = "OSS (self-hosted)" if self._mode == "oss" else "self-hosted (HTTP API)" if self._host else "platform (cloud API)"
         rerank_note = " Rerank is available on search." if (self._mode == "platform" and not self._host) else ""
-        return f"# Mem0 Memory\nActive. Mode: {mode_label}. User: {self._user_id}.\n{_PROMPT_BODY}{rerank_note}"
+        access_note = " Access: Read-only; this profile cannot store, update, delete, or automatically sync memories." if self._read_only else ""
+        tool_note = (
+            "Tools: mem0_search to find memories."
+            if self._read_only
+            else "Tools: mem0_search to find memories, mem0_add to store facts, mem0_update and mem0_delete to manage by ID."
+        )
+        return f"# Mem0 Memory\nActive. Mode: {mode_label}. User: {self._user_id}.{access_note}\n{_PROMPT_GUIDANCE}{tool_note}{rerank_note}"
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
         self._start_prefetch(message)
@@ -301,7 +334,7 @@ class Mem0MemoryProvider(MemoryProvider):
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
         """Send the turn to Mem0 for server-side fact extraction (non-blocking)."""
-        if self._backend is None or self._is_breaker_open():
+        if self._read_only or self._backend is None or self._is_breaker_open():
             return
 
         def _sync():
@@ -322,6 +355,8 @@ class Mem0MemoryProvider(MemoryProvider):
             self._sync_thread.start()
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
+        if self._read_only:
+            return [s for s in TOOL_SCHEMAS if s["name"] == "mem0_search"]
         return list(TOOL_SCHEMAS)
 
     # -- tool handlers: (required params, error label, body, client-error policy) ---
@@ -353,6 +388,10 @@ class Mem0MemoryProvider(MemoryProvider):
     }
 
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
+        # Enforce recall-only mode before backend health checks. A worker must
+        # never reach a write path, even while the shared backend is degraded.
+        if self._read_only and tool_name in {"mem0_add", "mem0_update", "mem0_delete"}:
+            return tool_error("Mem0 is read-only for this profile; write operations are disabled.")
         if self._backend is None:
             err = getattr(self, "_init_error", "unknown error")
             return json.dumps({"error": f"Mem0 backend not initialized: {err}.{self._oss_hint(' Check that {vs} is running and reachable.')}"})

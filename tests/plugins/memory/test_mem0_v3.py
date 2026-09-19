@@ -553,3 +553,85 @@ class TestSelfHostedConfig:
     def test_load_config_reads_mem0_host_env(self, monkeypatch):
         monkeypatch.setenv("MEM0_HOST", "http://localhost:8888")
         assert mem0_plugin._load_config()["host"] == "http://localhost:8888"
+
+
+class TestMem0ReadOnly:
+    """read_only mode (local carry): recall-only profiles get search + prefetch only."""
+
+    def test_read_only_exposes_search_only(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "mem0.json").write_text('{"read_only": true}')
+        provider = Mem0MemoryProvider()
+        names = [schema["name"] for schema in provider.get_tool_schemas()]
+        assert names == ["mem0_search"]
+
+    def test_read_only_environment_fallback(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("MEM0_READ_ONLY", "true")
+        provider = Mem0MemoryProvider()
+        assert [schema["name"] for schema in provider.get_tool_schemas()] == ["mem0_search"]
+
+    def test_read_only_prompt_does_not_advertise_write_tools(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "mem0.json").write_text('{"read_only": true}')
+        provider = Mem0MemoryProvider()
+        provider._user_id = "test"
+        block = provider.system_prompt_block()
+        assert "Read-only" in block
+        assert "mem0_search" in block
+        assert "mem0_add" not in block
+        assert "mem0_update" not in block
+        assert "mem0_delete" not in block
+
+    def test_read_only_keeps_search_guidance(self, monkeypatch, tmp_path):
+        # The recall-only prompt block must keep the multi-hop search discipline,
+        # not just the Tools line — otherwise read-only profiles lose the
+        # "search before answering / vary wording" guidance entirely.
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "mem0.json").write_text('{"read_only": true}')
+        provider = Mem0MemoryProvider()
+        provider._user_id = "test"
+        block = provider.system_prompt_block()
+        assert "persistent memory" in block
+        assert "multi-part or multi-hop" in block
+
+    def test_read_only_skips_automatic_turn_sync(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "mem0.json").write_text('{"read_only": true}')
+        backend = FakeBackend()
+        provider = Mem0MemoryProvider()
+        provider._backend = backend
+        provider.sync_turn("temporary worker input", "temporary worker output")
+        assert provider._sync_thread is None
+        assert backend.captured == []
+
+    @pytest.mark.parametrize("tool_name,args", [
+        ("mem0_add", {"content": "must not be written"}),
+        ("mem0_update", {"memory_id": "m1", "text": "must not be updated"}),
+        ("mem0_delete", {"memory_id": "m1"}),
+    ])
+    def test_read_only_rejects_write_calls(self, monkeypatch, tmp_path, tool_name, args):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "mem0.json").write_text('{"read_only": true}')
+        backend = FakeBackend()
+        provider = Mem0MemoryProvider()
+        provider._backend = backend
+        result = json.loads(provider.handle_tool_call(tool_name, args))
+        assert "read-only" in result["error"].lower()
+        assert backend.captured == []
+
+    def test_read_only_rejects_write_before_backend_health_check(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "mem0.json").write_text('{"read_only": true}')
+        provider = Mem0MemoryProvider()
+        assert provider._backend is None
+        result = json.loads(provider.handle_tool_call("mem0_add", {"content": "blocked"}))
+        assert "read-only" in result["error"].lower()
+
+    def test_read_only_string_false_leaves_writes_enabled(self, monkeypatch, tmp_path):
+        # 'false' as a string must not enable read-only (config JSON carries strings).
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "mem0.json").write_text('{"read_only": "false"}')
+        provider = Mem0MemoryProvider()
+        names = [schema["name"] for schema in provider.get_tool_schemas()]
+        assert "mem0_add" in names
