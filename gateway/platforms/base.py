@@ -4043,6 +4043,9 @@ class BasePlatformAdapter(ABC):
                 _ledger_id = getattr(event, "message_id", "")
             obligation_id = compute_obligation_id(
                 session_key, str(_ledger_id or ""), text_content)
+            if event._outcome_observer is not None:
+                obligation_id = "wake-" + obligation_id
+                event._outcome_observer("finalizing", obligation_id=obligation_id)
             await asyncio.to_thread(
                 record_obligation, obligation_id=obligation_id, session_key=session_key,
                 platform=str(getattr(source.platform, "value", source.platform)),
@@ -4066,6 +4069,12 @@ class BasePlatformAdapter(ABC):
         try:
             from gateway.dead_targets import classify_dead_error
             from gateway.delivery_ledger import is_reconnect_only, mark_delivered, mark_failed
+            if obligation_id.startswith("wake-") and getattr(result, "delivered", None) is False:
+                from gateway.delivery_ledger import _update_state
+                _update_state(obligation_id, "abandoned")
+                if event._outcome_observer is not None:
+                    event._outcome_observer("suppressed")
+                return
             if getattr(result, "success", False):
                 await asyncio.to_thread(mark_delivered, obligation_id)
                 return
@@ -4190,6 +4199,9 @@ class BasePlatformAdapter(ABC):
     async def _notify_turn_error(self, event: MessageEvent, e: BaseException) -> Optional[dict]:
         """Tell the user a turn failed rather than leaving radio silence (last resort:
         a failing notice is logged, never raised). Returns the thread metadata used."""
+        from gateway.event_outcome import WakeBoundaryClosed
+        if isinstance(e, WakeBoundaryClosed):
+            return None
         _thread_metadata = None
         try:
             _thread_metadata = _thread_metadata_for_event(event)
@@ -4331,10 +4343,14 @@ class BasePlatformAdapter(ABC):
 
     async def _process_message_background(self, event: MessageEvent, session_key: str) -> None:
         """Background task that actually processes the message."""
+        from gateway.event_outcome import observer, report
+        outcome_token = observer.set(event._outcome_observer)
+        outbound_results = []
         delivery_attempted = delivery_succeeded = False  # feeds the processing-complete hook
 
         def _record_delivery(result):
             nonlocal delivery_attempted, delivery_succeeded
+            outbound_results.append(result)
             if result is not None:
                 delivery_attempted = True
                 delivery_succeeded = delivery_succeeded or bool(getattr(result, "success", False))
@@ -4346,6 +4362,7 @@ class BasePlatformAdapter(ABC):
         try:
             await self._run_processing_hook("on_processing_start", event)
             response = await self._message_handler(event)
+            report("before_delivery")
             # A muted diagnostic wake ran for the session; its reply is not presented. The
             # policy read binds the routed profile; delivery itself stays in the launch scope.
             with self._media_delivery_scope(event.source):
@@ -4359,6 +4376,7 @@ class BasePlatformAdapter(ABC):
                 logger.info("[%s] Suppressing stale response for interrupted session %s", self.name,
                             session_key)
                 response = None
+                report("suppressed")
             if not response:
                 logger.debug("[%s] Handler returned empty/None response for %s", self.name, event.source.chat_id)
             else:
@@ -4392,6 +4410,15 @@ class BasePlatformAdapter(ABC):
                     event, extracted, _final_thread_metadata,
                     anything_sent=delivery_attempted or _tts_caption_delivered,
                     record_delivery=_record_delivery)
+            if delivery_attempted:
+                verified = bool(outbound_results) and all(
+                    getattr(result, "success", None) is True and getattr(result, "delivered", None) is not False
+                    for result in outbound_results)
+                report("delivered" if verified else "failed")
+            else:
+                # Empty, already-streamed and deliberately silent are distinct.
+                # The runner reports positively observed streaming/silence itself.
+                report("uncertain")
             processing_ok = delivery_succeeded if delivery_attempted else not bool(response)
             # Clean up the per-turn streaming-TTS flag.
             self._streaming_tts_completed_turns.discard(self._streaming_tts_turn_key(
@@ -4412,11 +4439,13 @@ class BasePlatformAdapter(ABC):
                 return  # Drain task owns the session now.
         except asyncio.CancelledError:
             expected = asyncio.current_task() in self._expected_cancelled_tasks
+            report("cancelled" if expected else "uncertain")
             await self._run_processing_hook(
                 "on_processing_complete", event,
                 ProcessingOutcome.CANCELLED if expected else ProcessingOutcome.FAILURE)
             raise
         except BaseException as e:
+            report("failed")
             await self._run_processing_hook("on_processing_complete", event, ProcessingOutcome.FAILURE)
             logger.error("[%s] Error handling message: %s", self.name, e, exc_info=True)
             _thread_metadata = (await self._notify_turn_error(event, e)) or _thread_metadata
@@ -4424,6 +4453,7 @@ class BasePlatformAdapter(ABC):
             if isinstance(e, (SystemExit, KeyboardInterrupt)):
                 raise
         finally:
+            observer.reset(outcome_token)
             # Stop typing BEFORE the post-delivery callback: a stuck callback must not keep it
             # alive.
             await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_thread_metadata)

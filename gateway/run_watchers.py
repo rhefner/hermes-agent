@@ -43,6 +43,8 @@ class GatewaySessionWatchersMixin:
         while self._running:
             try:
                 await self._session_housekeeping()
+                from gateway.wake_monitor import poll_runner
+                await poll_runner(self)
             except Exception as e:
                 logger.debug("Session housekeeping error: %s", e)
             await _interruptible_sleep(self, interval)

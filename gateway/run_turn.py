@@ -412,6 +412,12 @@ class GatewayTurnMixin:
         pinned_session_id = str(event_metadata.get("gateway_session_id") or "").strip()
         if strict_session:
             session_entry = await self.async_session_store.lookup_by_session_key(expected_session_key)
+            if session_entry is not None and event._outcome_observer is not None:
+                # The trusted observer verifies native compression ancestry against
+                # its immutable origin; metadata alone cannot opt into rebinding.
+                event._outcome_observer("resolve", session_id=session_entry.session_id,
+                                        session_key=expected_session_key)
+                pinned_session_id = session_entry.session_id
             if session_entry is None or not pinned_session_id or session_entry.session_id != pinned_session_id:
                 logger.warning(
                     "Dropping internally routed event: expected session id=%s is no longer current for key=%s",
@@ -1912,6 +1918,8 @@ class GatewayTurnMixin:
             return None
         # Intentional silence is a delivery decision: the [SILENT] turn stays persisted (alternation).
         if _intentional_silence:
+            from gateway.event_outcome import report
+            report("suppressed")
             logger.info("Suppressing intentional silence marker for session %s", session_entry.session_id)
             response = ""
 
@@ -1928,6 +1936,9 @@ class GatewayTurnMixin:
         # Streamed responses still need MEDIA: files delivered (chunks carry the tags verbatim). Never
         # skip when the agent failed: the error text is new content streaming didn't show.
         if agent_result.get("already_sent") and not agent_result.get("failed"):
+            if agent_result.get("_outcome_final_text") == response and response:
+                from gateway.event_outcome import report
+                report("delivered")
             if response and adapter:
                 await self._deliver_media_from_response(response, event, adapter)
             # Streaming delivered the body, but the footer was held back (`not already_sent` gate).
@@ -2168,6 +2179,8 @@ class GatewayTurnMixin:
             # Admission/typing is not execution. All routing, authorization and
             # turn preparation gates have passed when the agent runner is entered.
             event._heartbeat_execution_started = True
+            from gateway.event_outcome import report
+            report("execution", session_id=_run_start_session_id, session_key=session_key, generation=run_generation)
             agent_result = await self._run_agent(
                 message=message_text, context_prompt=prepared.context_prompt, history=history, source=source,
                 session_id=_run_start_session_id, session_key=session_key,
@@ -3534,6 +3547,8 @@ class GatewayTurnMixin:
                 # Prefer the real result even if the watchdog fired in the same window (the run already
                 # persisted its reply).
                 return worker.executor_task.result()
+            from gateway.event_outcome import report
+            report("activity", at=self._agent_activity_summary(agent_holder[0]).get("last_activity_at"))
             if worker.agent_timeout is not None:
                 if worker.timeout_fired.is_set():
                     break
@@ -3604,6 +3619,28 @@ class GatewayTurnMixin:
         pending_event = None
         pending = None
         if result and adapter and session_key:
+            from gateway.event_outcome import observer
+            slot = getattr(adapter, "_pending_messages", {})
+            overflow = self._overflow_queue(session_key)
+            head = slot.get(session_key) or (overflow[0] if overflow else None)
+            event_scoped = observer.get() is not None or getattr(head, "_outcome_observer", None) is not None
+            if event_scoped and self._draining:
+                # Do not leave work for the adapter's fresh-task drain after the
+                # runner has entered its no-new-followups boundary. Observed wakes
+                # are never restart-spooled/replayed; their receipts stay admitted.
+                slot.pop(session_key, None)
+                if overflow:
+                    overflow.clear()
+                return None, None
+            if event_scoped and head is not None:
+                # Recursive _run_agent bypasses the event execution checkpoint and
+                # inherits the OPENING event's observer through its terminal send.
+                # Keep observed turns separate on the existing adapter task drain,
+                # including an ordinary reply following an observed wake. Promote
+                # an orphaned FIFO head so the adapter can drain without user input.
+                if head is not None and session_key not in slot:
+                    slot[session_key] = overflow.pop(0)
+                return None, None
             pending_event = _dequeue_pending_event(adapter, session_key)
             # /queue overflow: promote the next queued event into the consumed "next-up" slot so the
             # recursive drain sees it (keeps FIFO order; a mid-chain /queue can't jump the queue).
@@ -3657,6 +3694,17 @@ class GatewayTurnMixin:
             )
             pending_event = None
             pending = None
+        if pending and adapter and session_key:
+            from gateway.event_outcome import observer
+            if observer.get() is not None:
+                # Late steer/interrupt text has no MessageEvent yet. Give it its
+                # own normal turn after command filtering and the draining gate,
+                # rather than recursively inheriting the opening wake's observer.
+                from gateway.platforms.event import MessageEvent
+                self._enqueue_fifo(session_key, MessageEvent(
+                    text=pending, source=source, allow_gateway_control=False,
+                ), adapter)
+                return None, None
         return pending_event, pending
 
     async def _run_agent_deliver_first_response(
@@ -3984,6 +4032,9 @@ class GatewayTurnMixin:
                 _sk, _streamed, _previewed, _content_delivered,
             )
             response["already_sent"] = True
+            matcher = getattr(_sc, "delivered_final_matches", None)
+            if callable(matcher) and matcher(_final) is True:
+                response["_outcome_final_text"] = _final
         elif not _transformed and _stale_finalized and _sc is not None:
             # Stale finalize: edit the streamed message up to the complete response (on failure the
             # normal send delivers). Not for split delivery — message_id is only the LAST chunk.

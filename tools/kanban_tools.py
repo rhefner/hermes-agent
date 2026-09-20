@@ -1019,6 +1019,7 @@ def _resolve_notify_target() -> Optional[dict[str, Any]]:
             ("thread_id", thread_id), ("chat_type", chat_type),
             ("scope_id", env("HERMES_SESSION_SCOPE_ID", "")),
             ("parent_chat_id", env("HERMES_SESSION_PARENT_CHAT_ID", "")),
+            ("origin_session_id", env("HERMES_SESSION_ID", "")),
         ) if v}
     if (platform.lower() == "telegram" and thread_id
             and (chat_type or "").lower() in {"dm", "direct", "private"}):

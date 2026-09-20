@@ -415,6 +415,9 @@ class GatewayStartupMixin:
             adapter = await self._obligation_adapter(row)
             if adapter is None:
                 continue
+            from gateway.wake_delivery import recovery_allowed
+            if not await asyncio.to_thread(recovery_allowed, row):
+                continue
             content = row["content"]
             if row.get("needs_marker"):
                 content = row.get("marker", RECOVERED_MARKER) + content
@@ -425,7 +428,11 @@ class GatewayStartupMixin:
                 logger.warning("obligation %s: redelivery send raised: %s", row["obligation_id"], send_err)
                 result = None
             with _log_suppressed(logging.DEBUG, "delivery ledger update failed", exc_info=True):
-                if result is not None and getattr(result, "success", False):
+                if (row["obligation_id"].startswith("wake-") and
+                        getattr(result, "delivered", None) is False):
+                    from gateway.delivery_ledger import _update_state
+                    await asyncio.to_thread(_update_state, row["obligation_id"], "abandoned")
+                elif result is not None and getattr(result, "success", False):
                     await asyncio.to_thread(mark_delivered, row["obligation_id"])
                     redelivered += 1
                     logger.info(

@@ -24,6 +24,8 @@ class StreamFallbackMixin:
         if not text.strip():
             return reply_to_id
         try:
+            from gateway.event_outcome import report
+            report("before_delivery")
             result = await self.adapter.send(
                 chat_id=self.chat_id, content=text, reply_to=reply_to_id,
                 metadata=self._metadata_for_send(final=final, expect_edits=not final))
@@ -210,6 +212,8 @@ class StreamFallbackMixin:
             kwargs["reply_to"] = reply_to
         result = None
         for attempt in range(2):
+            from gateway.event_outcome import report
+            report("before_delivery")
             result = await self.adapter.send(**kwargs)
             if getattr(result, "success", False):
                 break
@@ -304,6 +308,8 @@ class StreamFallbackMixin:
             # Interim: must never seal a native stream (see _send_commentary).
             _md = dict(self.metadata) if self.metadata else {}
             _md["_interim_send"] = True
+            from gateway.event_outcome import report
+            report("before_delivery")
             result = await self.adapter.send(chat_id=self.chat_id, content=tail, metadata=_md)
             if result.success:
                 self._already_sent = True
@@ -336,6 +342,8 @@ class StreamFallbackMixin:
             _plat = getattr(getattr(self.adapter, "platform", None), "value", None)
             _platform_name = str(_plat or getattr(self.adapter, "name", "")).lower()
             _needs_reply_anchor = _platform_name in ("buzz", "slack", "mattermost", "feishu")
+            from gateway.event_outcome import report
+            report("before_delivery")
             result = await self.adapter.send(
                 chat_id=self.chat_id, content=text,
                 reply_to=self._initial_reply_to_id if _needs_reply_anchor else None, metadata=_md)

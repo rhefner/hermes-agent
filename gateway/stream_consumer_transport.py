@@ -275,6 +275,8 @@ class StreamTransportMixin:
             return False
         stale_ids = self._stale_preview_ids()
         try:
+            from gateway.event_outcome import report
+            report("before_delivery")
             result = await self.adapter.send(
                 chat_id=self.chat_id, content=text, metadata=self._metadata_for_send(final=True))
         except Exception as e:
@@ -308,6 +310,8 @@ class StreamTransportMixin:
         """Send or edit the streaming message; True if delivered.  ``finalize`` marks the
         last edit.  Transport order: native frame → draft frame → edit existing → first
         send; a transport returns None to fall through to the next."""
+        from gateway.event_outcome import report
+        report("before_delivery")
         text = self._clean_for_display(text)
         # Stream-is-the-message draft frames must stay prefix-stable: a closing ```
         # on a mid-code-block frame makes frame N not a prefix of N+1 and the

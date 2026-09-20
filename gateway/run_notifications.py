@@ -1205,7 +1205,12 @@ class GatewayNotificationsMixin:
             _prime = getattr(adapter, "prime_routing_cache", None)
             if callable(_prime):
                 _prime(synth_event)
-            await admit_internal_event(adapter, synth_event)
+            await admit_internal_event(
+                adapter, synth_event,
+                identity=(evt.get("_wake_identities") or self._completion_delivery_identity(evt))
+                if evt.get("type") == "async_delegation" else None,
+                session_id=parent_session_id,
+            )
             return True
         except WakeNotAccepted:
             # Durable callers refund the claim; ordinary watch callers just requeue.
@@ -1382,6 +1387,8 @@ class GatewayNotificationsMixin:
         verdict = await self._classify_completion_target(parent_session_id)
         if verdict == "terminal":
             if evt_type == "async_delegation":
+                from gateway.wake_receipts import record_closed_completion
+                record_closed_completion(self, evt)
                 logger.warning(
                     "Async delegation %s targets permanently-gone session %s; "
                     "terminally dropping delivery (result remains in the delegation records).",
@@ -1450,7 +1457,11 @@ class GatewayNotificationsMixin:
                 if self._completion_identity_seen(identity, claim=True):
                     return None
                 identity_claimed = True
-            injection_result = await self._inject_watch_notification(synth_text, evt, raise_not_accepted=True)
+            injection_event = dict(evt)
+            if evt.get("type") == "async_delegation":
+                injection_event["_wake_identities"] = [identity, *(
+                    self._completion_delivery_identity(sibling) for sibling, _ in sibling_claims)]
+            injection_result = await self._inject_watch_notification(synth_text, injection_event, raise_not_accepted=True)
             if injection_result is not True:
                 return injection_result
             accepted = True
