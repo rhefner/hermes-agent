@@ -313,6 +313,9 @@ def mark_attempting(obligation_id: str) -> None:
 
 def mark_delivered(obligation_id: str) -> None:
     _update_state(obligation_id, "delivered")
+    if obligation_id.startswith("wake-"):
+        from gateway.wake_delivery import settle
+        settle(obligation_id)
 
 
 def mark_failed(obligation_id: str, error: str = "") -> None:

@@ -76,12 +76,22 @@ def session_owned_by_profile(config: Any, profile: Optional[str], session_id: An
     return bool(row) and (row.get("profile_name") or profile) == profile
 
 
-async def admit_internal_event(adapter: Any, event: Any) -> None:
+async def admit_internal_event(adapter: Any, event: Any, *, identity=None, session_id="") -> None:
     """Require a concrete adapter admission, not merely a handler returning None.
 
     The public handler return stays unchanged. This receipt means scheduled/queued,
     not model execution, authorization of a later turn, or successful outbound delivery.
     """
+    if identity is not None:
+        from gateway.wake_receipts import ReceiptStore, admit, settings
+        if settings()["enabled"]:
+            from gateway.session import build_session_key
+            key = (event.metadata or {}).get("gateway_session_key") or build_session_key(event.source)
+            store = ReceiptStore()
+            identities = identity if isinstance(identity, list) else [identity]
+            receipts = [store.prepare(item, event.source, key, session_id) for item in identities]
+            await admit(adapter, event, receipts)
+            return
     event._gateway_accepted = False
     await adapter.handle_message(event)
     if event._gateway_accepted is not True:
@@ -89,7 +99,7 @@ async def admit_internal_event(adapter: Any, event: Any) -> None:
 
 
 async def deliver_wake(adapter: Any, *, text: str, session_id: str = "", source: Any = None,
-                       notification_category: str = "result", profile: Optional[str] = None) -> None:
+                       notification_category: str = "result", profile: Optional[str] = None, identity=None) -> None:
     """Deliver a wake turn to the session behind ``adapter``. ``session_id`` is the RAW session id
     (``X-Hermes-Session-Id`` / state.db key) — required for non-push adapters. ``source`` is the
     ``SessionSource`` for the synthetic event — required for push-capable adapters. ``profile``
@@ -102,7 +112,7 @@ async def deliver_wake(adapter: Any, *, text: str, session_id: str = "", source:
         from gateway.platforms.event import MessageEvent, MessageType
         synth_event = MessageEvent(text=text, message_type=MessageType.TEXT, source=source, internal=True,
                                    metadata={"notification_category": notification_category})
-        await admit_internal_event(adapter, synth_event)
+        await admit_internal_event(adapter, synth_event, identity=identity, session_id=session_id)
         return
     if not session_id:
         raise ValueError("deliver_wake: non-push adapter (supports_async_delivery=False) "

@@ -669,7 +669,10 @@ class _KanbanNotification:
             if not profile_exists(self.sub_profile):
                 raise RuntimeError(f"Kanban wake profile {self.sub_profile!r} no longer exists")
         async with _async_profile_runtime_scope(self.runner._resolve_profile_home_for_source(_source)):
-            await deliver_wake(self.adapter, text=self.synth, session_id=self.session_key, source=_source,
+            await deliver_wake(self.adapter, text=self.synth,
+                               session_id=_delivery_meta.get("origin_session_id", ""), source=_source,
+                               identity=[("kanban", self.board_slug, self.task_id, ev.id)
+                                         for ev in self.d["events"] if ev.kind in _WAKE_KINDS],
                                notification_category="diagnostic" if self.wake_diagnostic else "result")
         self._log_woke()
 

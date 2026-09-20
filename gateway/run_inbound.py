@@ -1768,7 +1768,7 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
     async def _mark_durable_active_turn(self, event: MessageEvent, session_key: str) -> bool:
         """Persist the exact resolved routing key for this running turn."""
         try:
-            token = await self.async_session_store.mark_turn_active(session_key)
+            token = await self.async_session_store.mark_turn_active(session_key, replay_allowed=event._replay_on_restart)
         except Exception as exc:
             logger.warning("Could not persist active-turn marker for %s: %s", session_key, exc)
             return False

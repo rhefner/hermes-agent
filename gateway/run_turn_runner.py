@@ -843,6 +843,8 @@ class TurnRunner:
         )
 
     def _event_callback_sync(self, event_type: str, context: dict) -> None:
+        from gateway.event_outcome import report
+        report("progress")
         ctx = self._ctx
         try:
             asyncio.run_coroutine_threadsafe(ctx._hooks_ref.emit(event_type, context), ctx._loop_for_step)

@@ -120,12 +120,14 @@ class SessionLifecycleMixin:
         """
         return self._update_entry(session_key, lambda e: setattr(e, "suspended", True))
 
-    def _set_turn_marker_locked(self, session_key: str, entry: SessionEntry, token, started_at) -> None:
+    def _set_turn_marker_locked(self, session_key: str, entry: SessionEntry, token, started_at, replay_allowed=None) -> None:
         """Persist the active-turn pair BEFORE publishing it in memory, so a failed write can
         neither leak an unowned token nor drop a live one. Lock held."""
         candidate = entry.to_dict()
         candidate["active_turn_token"] = token
         candidate["active_turn_started_at"] = _iso(started_at)
+        if replay_allowed is not None:
+            candidate["active_turn_replay_allowed"] = replay_allowed
         touched = _now() if started_at is not None else None
         if touched is not None:
             # Keeps the legacy 120s startup heuristic working for an older binary during a rolling
@@ -136,8 +138,10 @@ class SessionLifecycleMixin:
         entry.active_turn_started_at = started_at
         if touched is not None:
             entry.updated_at = touched
+        if replay_allowed is not None:
+            entry.active_turn_replay_allowed = replay_allowed
 
-    def mark_turn_active(self, session_key: str) -> Optional[str]:
+    def mark_turn_active(self, session_key: str, *, replay_allowed: bool = True) -> Optional[str]:
         """Persist exact ownership of the running agent turn; returns the opaque token for
         :meth:`clear_turn_active`. Re-marking replaces the previous token so a stale asynchronous
         unwind cannot clear a newer turn."""
@@ -148,7 +152,7 @@ class SessionLifecycleMixin:
                 return None
             # Aware UTC, unlike the local wall clock elsewhere: the next process compares it with
             # epoch transcript timestamps and may run in another zone (DST, container vs unit TZ).
-            self._set_turn_marker_locked(session_key, entry, token, datetime.now(UTC))
+            self._set_turn_marker_locked(session_key, entry, token, datetime.now(UTC), replay_allowed)
         return token
 
     def clear_turn_active(self, session_key: str, token: str) -> bool:
@@ -177,7 +181,7 @@ class SessionLifecycleMixin:
             marker_is_stale = started_at is None or (
                 max_age_seconds > 0 and epoch_now - started_at.timestamp() > max_age_seconds
             )
-            if not marker_is_stale and not entry.suspended:
+            if not marker_is_stale and not entry.suspended and entry.active_turn_replay_allowed:
                 if entry.resume_pending:
                     # A drain-timeout marker is more specific; keep it.
                     if entry.last_resume_marked_at is None:
@@ -208,7 +212,7 @@ class SessionLifecycleMixin:
         """Mark a session resumable after a restart interruption (keeps the session_id/transcript,
         unlike ``suspend_session``). True if marked."""
         def _apply(entry: SessionEntry):
-            if entry.suspended:  # never override an explicit ``suspended`` (hard forced-wipe)
+            if entry.suspended or not entry.active_turn_replay_allowed:
                 return False
             entry.resume_pending = True
             entry.resume_reason = reason
