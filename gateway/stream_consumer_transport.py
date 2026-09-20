@@ -13,6 +13,7 @@ from typing import Any, Optional
 
 from gateway.platforms.base import BasePlatformAdapter as _BasePlatformAdapter
 from gateway.stream_consumer_fences import ensure_closed_code_fences
+from gateway.event_outcome import WakeBoundaryClosed, report
 
 logger = logging.getLogger("gateway.stream_consumer")
 
@@ -35,12 +36,14 @@ class StreamTransportMixin:
                     kwargs["metadata"] = self.metadata
             except (TypeError, ValueError):
                 pass
+        report("before_delivery")
         return await self.adapter.edit_message(**kwargs)
 
     async def _try_seed_frame(self, fail_log: str, *, exc_info: bool = False) -> bool:
         """Open a native stream with an empty seed frame (typing indicator before any token) as a
         bool; a raise logs ``fail_log`` at DEBUG (error formatted in, or the traceback when
         ``exc_info``) and reads as False."""
+        report("before_delivery")
         seed = self.adapter.send_stream_frame(
             "", chat_id=self.chat_id, reply_to=self._initial_reply_to_id, turn_id=self._turn_id)
         return await self._try_frame(seed, fail_log, exc_info=exc_info)
@@ -50,6 +53,8 @@ class StreamTransportMixin:
         """Await a frame send as a bool; a raise logs ``fail_log`` at DEBUG and reads as False."""
         try:
             return bool(await coro)
+        except WakeBoundaryClosed:
+            raise
         except Exception as e:
             if exc_info:
                 logger.debug(fail_log, exc_info=True)
@@ -59,6 +64,7 @@ class StreamTransportMixin:
 
     async def _send_frame(self, text: str, *, finalize: bool):
         """One native-stream frame; every frame carries the same chat/reply/turn routing."""
+        report("before_delivery")
         return await self.adapter.send_stream_frame(
             text, finalize=finalize, chat_id=self.chat_id, reply_to=self._initial_reply_to_id,
             turn_id=self._turn_id)
@@ -165,9 +171,12 @@ class StreamTransportMixin:
             self._use_draft_streaming = False
             return False
         try:
+            report("before_delivery")
             result = await self.adapter.send_draft(
                 chat_id=self.chat_id, draft_id=self._draft_id, content=text,
                 metadata=self._draft_metadata())
+        except WakeBoundaryClosed:
+            raise
         except Exception as e:
             logger.debug("send_draft raised, disabling draft transport for this run: %s", e)
         else:
@@ -202,9 +211,12 @@ class StreamTransportMixin:
         if getattr(type(self.adapter), "abandon_open_draft", None) is None:
             return
         try:
+            report("before_delivery")
             await self.adapter.abandon_open_draft(
                 self.chat_id, self._last_sent_text or self._clean_for_display(self._accumulated),
                 metadata=self._draft_metadata())
+        except WakeBoundaryClosed:
+            raise
         except Exception as e:
             logger.debug("abandon_open_draft failed (best-effort): %s", e)
 
@@ -279,6 +291,8 @@ class StreamTransportMixin:
             report("before_delivery")
             result = await self.adapter.send(
                 chat_id=self.chat_id, content=text, metadata=self._metadata_for_send(final=True))
+        except WakeBoundaryClosed:
+            raise
         except Exception as e:
             logger.debug("Fresh-final send failed, falling back to edit: %s", e)
             return False
@@ -352,6 +366,8 @@ class StreamTransportMixin:
             if not self._edit_supported:
                 return False  # edits unsupported; fallback path sends the final
             return await self._edit_existing(text, finalize=finalize, is_turn_final=is_turn_final)
+        except WakeBoundaryClosed:
+            raise
         except Exception as e:
             logger.error("Stream send/edit error: %s", e)
             return False
@@ -407,6 +423,8 @@ class StreamTransportMixin:
             try:
                 await self._send_frame(text, finalize=True)
                 logger.debug("Native fallback: finalized stream (best-effort close)")
+            except WakeBoundaryClosed:
+                raise
             except Exception as e:
                 logger.debug("Native fallback: failed to finalize stream: %s", e)
         return None
@@ -443,6 +461,7 @@ class StreamTransportMixin:
                 "declined this destination for this run"
             )
             return False
+        report("before_delivery")
         result = await self.adapter.send(
             chat_id=self.chat_id, content=text, reply_to=self._initial_reply_to_id,
             metadata=self._metadata_for_send(final=finalize, expect_edits=not finalize))

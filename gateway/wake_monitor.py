@@ -74,7 +74,8 @@ async def reconcile(store, cfg, send):
             if isinstance(result, dict):
                 success = result.get("success") is True and result.get("delivered") is not False
             else:
-                success = getattr(result, "success", None) is True
+                success = (getattr(result, "success", None) is True
+                           and getattr(result, "delivered", None) is not False)
             state = "sent" if success else "failed"
         except Exception:
             # Network exceptions contain secrets on some adapters. Keep them out

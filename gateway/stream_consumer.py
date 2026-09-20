@@ -31,6 +31,7 @@ from gateway.response_filters import (
     is_intentional_silence_response as _is_intentional_silence_response,
     is_partial_silence_marker as _is_partial_silence_marker)
 from gateway.stream_consumer_fences import ensure_closed_code_fences
+from gateway.event_outcome import WakeBoundaryClosed, report
 from gateway.stream_consumer_transport import StreamTransportMixin
 from gateway.stream_consumer_fallback import StreamFallbackMixin
 from gateway.stream_consumer_think import StreamThinkFilterMixin
@@ -491,6 +492,9 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                 logger.info("[latency] Clarify boundary finalized, awaiting first "
                             "post-answer delta to re-seed (chat=%s, turn=%s)",
                             self.chat_id, self._turn_id)
+        except WakeBoundaryClosed:
+            boundary_ok = False
+            raise
         except Exception as e:
             logger.warning("%s boundary processing failed: %s", _reason, e)
             boundary_ok = False
@@ -508,6 +512,8 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                 logger.debug("%s boundary: finalized stream (chat=%s, turn=%s)",
                              _reason, self.chat_id, self._turn_id)
                 return True
+        except WakeBoundaryClosed:
+            raise
         except Exception as e:
             logger.warning("%s boundary: finalize failed: %s", _reason, e)
         # Typing bubble may still show partial content; deliver via send().
@@ -515,8 +521,15 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                        "falling back to send() for pre-prompt text (chat=%s)",
                        _reason, self.chat_id)
         try:
-            if getattr(await self.adapter.send(self.chat_id, finalize_text), "success", False):
+            report("before_delivery")
+            metadata = self._metadata_for_send(final=False) or {}
+            metadata["_interim_send"] = True
+            if getattr(await self.adapter.send(
+                    self.chat_id, finalize_text, reply_to=self._initial_reply_to_id,
+                    metadata=metadata), "success", False):
                 return True
+        except WakeBoundaryClosed:
+            raise
         except Exception as send_err:
             logger.warning("%s boundary: fallback send also failed: %s", _reason, send_err)
         logger.error("%s boundary: both finalize and fallback send failed "
@@ -601,6 +614,8 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
 
         except asyncio.CancelledError:
             await self._on_cancelled()
+        except WakeBoundaryClosed:
+            raise
         except Exception as e:
             logger.error("Stream consumer error: %s", e)
         finally:

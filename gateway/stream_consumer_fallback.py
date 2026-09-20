@@ -4,12 +4,12 @@ stop working, chunking, cursor cleanup, commentary and silence retraction."""
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 from typing import Any, Callable, Optional
 
 from gateway.platforms.base import BasePlatformAdapter as _BasePlatformAdapter
 from gateway.stream_consumer_fences import ensure_closed_code_fences
+from gateway.event_outcome import WakeBoundaryClosed
 
 logger = logging.getLogger("gateway.stream_consumer")
 
@@ -38,6 +38,8 @@ class StreamFallbackMixin:
             self._last_sent_text = text
             self._notify_new_message()
             return str(result.message_id)
+        except WakeBoundaryClosed:
+            raise
         except Exception as e:
             logger.error("Stream send chunk error: %s", e)
             return reply_to_id
@@ -181,10 +183,14 @@ class StreamFallbackMixin:
         if (self._message_id and self._last_sent_text and self.cfg.cursor
                 and self._last_sent_text.endswith(self.cfg.cursor)):
             clean_text = self._last_sent_text[:-len(self.cfg.cursor)]
-            with contextlib.suppress(Exception):
+            try:
                 result = await self._edit_message(message_id=self._message_id, content=clean_text)
                 if result.success:
                     self._last_sent_text = clean_text
+            except WakeBoundaryClosed:
+                raise
+            except Exception:
+                pass
         self._already_sent = True
         # Recorder substitutes the full ledger on a split turn.
         self._mark_final_delivered(record=final_text)
@@ -237,6 +243,8 @@ class StreamFallbackMixin:
             result = await self._send_with_flood_retry(
                 content=final_text, reply_to=self._initial_reply_to_id,
                 retry_log="Flood control on empty fallback final send; retrying in %.1fs")
+        except WakeBoundaryClosed:
+            raise
         except Exception as exc:
             logger.debug("Empty fallback final send failed: %s", exc)
             return "ambiguous" if self._send_failure_may_have_delivered(exc) else "failed"
@@ -313,6 +321,8 @@ class StreamFallbackMixin:
             result = await self.adapter.send(chat_id=self.chat_id, content=tail, metadata=_md)
             if result.success:
                 self._already_sent = True
+        except WakeBoundaryClosed:
+            raise
         except Exception as e:
             logger.error("Segment-break tail flush error: %s", e)
 
@@ -321,10 +331,14 @@ class StreamFallbackMixin:
         prefix = self._visible_prefix()
         if not self._has_real_preview() or not prefix.strip():
             return
-        with contextlib.suppress(Exception):  # never block the fallback path
+        try:
             result = await self._edit_message(message_id=self._message_id, content=prefix)
             if getattr(result, "success", False):
                 self._last_sent_text = prefix
+        except WakeBoundaryClosed:
+            raise
+        except Exception:
+            pass  # ordinary cosmetic edit failure must not block fallback
 
     async def _send_commentary(self, text: str) -> bool:
         """Send a completed interim assistant commentary message."""
@@ -357,6 +371,8 @@ class StreamFallbackMixin:
                 # split (#14238).
                 self._delivered_commentary_texts.append(text)
             return result.success
+        except WakeBoundaryClosed:
+            raise
         except Exception as e:
             logger.error("Commentary send error: %s", e)
             return False
