@@ -16,6 +16,7 @@ import functools
 import os
 import time
 import weakref as _weakref
+from agent.maintenance_admission import tracked as _maintenance_tracked
 from agent.async_utils import consume_detached_task_result
 from contextvars import Context
 from datetime import datetime, timedelta, timezone
@@ -1464,6 +1465,7 @@ class GatewayAdapterLifecycleMixin:
     def _multiplex_on(self) -> bool:
         return bool(getattr(self.config, "multiplex_profiles", False))
 
+    @_maintenance_tracked("gateway-platform-event")
     async def _handle_gateway_platform_event(self, event: dict, source) -> None:
         """Authorize and publish one normalized adapter event to plugin hooks."""
         # Observer failures must never break the adapter's update loop.

@@ -25,6 +25,7 @@ from typing import Mapping
 from typing import Optional
 from typing import TYPE_CHECKING
 
+from agent.maintenance_admission import tracked as _maintenance_tracked
 from hermes_cli.quiet_single_query import KANBAN_WORKER_EXIT_TRAILER
 
 if TYPE_CHECKING:
@@ -1905,6 +1906,7 @@ def _memory_pressure_level(sample: Optional[Mapping[str, Any]] = None) -> str:
         return "unknown"
 
 
+@_maintenance_tracked("kanban-dispatch")
 def dispatch_once(
     conn: sqlite3.Connection,
     *,

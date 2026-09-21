@@ -17,6 +17,7 @@ import os
 import re
 import time
 from contextlib import suppress
+from agent.maintenance_admission import tracked as _maintenance_tracked, NOTICE as _MAINTENANCE_NOTICE
 from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
@@ -1261,6 +1262,7 @@ class GatewayInboundMixin:
             logger.debug("FIFO orphan rescue pre-claim failed for %s", _quick_key, exc_info=True)
             return event, source, is_internal
 
+    @_maintenance_tracked("gateway-inbound", refused=_MAINTENANCE_NOTICE)
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """Handle an incoming message from any platform: auth → command check → running-agent
         interrupt → get/create session → build context → run agent → return response."""

@@ -35,6 +35,7 @@ from typing import Any, Callable, List, Optional, Protocol
 # `hermes update`) otherwise fail with ModuleNotFoundError for hermes_time et al.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from agent.maintenance_admission import tracked as _maintenance_tracked
 from hermes_constants import get_hermes_home
 from cron.env_settings import cron_env_setting
 from hermes_cli._subprocess_compat import windows_hide_flags
@@ -2280,6 +2281,7 @@ class _FireAudit:
 
 
 
+@_maintenance_tracked("cron-job")
 def run_job(
     job: dict, *, defer_agent_teardown: Optional[list] = None, extra_prompt: Optional[str] = None,
     cancel_event: Optional[_CancelEventLike] = None, execution_id: Optional[str] = None,

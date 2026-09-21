@@ -14,6 +14,7 @@ import contextlib
 import json
 import os
 import time
+from agent.maintenance_admission import tracked as _maintenance_tracked, NOTICE as _MAINTENANCE_NOTICE
 from agent.i18n import t
 from agent.session_activity import format_iteration_progress
 from gateway.config import Platform
@@ -890,6 +891,7 @@ class GatewayBusySessionMixin:
         k: f"_busy_{k}_command" for k in ("start", "stop", "new", "queue", "steer", "egress", "goal", "loop")
     }
 
+    @_maintenance_tracked("gateway-busy-command", refused=_MAINTENANCE_NOTICE)
     async def _dispatch_busy_slash_command(self, event: MessageEvent, cmd_def, quick_key: str, source):
         """Dispatch a recognized slash command while an agent is running.
 

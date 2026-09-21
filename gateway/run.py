@@ -4196,7 +4196,17 @@ class GatewayRunner(
         """Run blocking work in the thread pool while preserving session contextvars."""
         loop = asyncio.get_running_loop()
         ctx = copy_context()
-        return await loop.run_in_executor(self._get_executor(), ctx.run, func, *args)
+        from agent.maintenance_admission import reserved_target
+        tracked_func, cancel_reservation = reserved_target(func, "gateway-executor")
+        try:
+            future = self._get_executor().submit(ctx.run, tracked_func, *args)
+        except BaseException:
+            cancel_reservation()
+            raise
+        # Cancelling the await does not finish the blocking work. The reservation
+        # belongs to the concurrent future/thread, never the asyncio waiter.
+        future.add_done_callback(lambda f: cancel_reservation() if f.cancelled() else None)
+        return await asyncio.wrap_future(future, loop=loop)
 
     def _get_executor(self) -> concurrent.futures.ThreadPoolExecutor:
         """Return the gateway-owned executor for blocking agent work."""

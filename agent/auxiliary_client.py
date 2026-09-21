@@ -480,9 +480,15 @@ def _run_protected_sync_provider_call(callback: Callable[[dict[str, Any]], Any],
         finally:
             done.set()
 
-    threading.Thread(
-        target=provider_context.run, args=(_provider_worker,), name="hermes-protected-aux-provider",
-        daemon=True).start()
+    from agent.maintenance_admission import reserved_target
+    tracked_worker, cancel_reservation = reserved_target(_provider_worker, "auxiliary-provider")
+    try:
+        threading.Thread(
+            target=provider_context.run, args=(tracked_worker,), name="hermes-protected-aux-provider",
+            daemon=True).start()
+    except BaseException:
+        cancel_reservation()
+        raise
     while True:
         # Check cancel before AND after each wait so it wins when result publication and the
         # host Event land in the same polling interval.
@@ -2507,22 +2513,24 @@ _RELAY_AUX_CALL_CONTEXT: contextvars.ContextVar[Optional[Dict[str, Any]]] = (
 def _relay_aux_call_scope(args: tuple, kwargs: dict):
     """Bind a fresh relay call context for one auxiliary call; mark it failed on any exception."""
     task = args[0] if args else kwargs.get("task")
-    token = _RELAY_AUX_CALL_CONTEXT.set({
-        "task": str(task or "unknown"),
-        "request_id": f"aux-{uuid.uuid4().hex}",
-        "attempt_count": 0,
-        "provider": "",
-        "model": "",
-        "response_model": None,
-        "api_mode": "chat_completions",
-    })
-    try:
-        yield
-    except BaseException:
-        _fail_relay_auxiliary_call()
-        raise
-    finally:
-        _RELAY_AUX_CALL_CONTEXT.reset(token)
+    from agent.maintenance_admission import work
+    with work("auxiliary-call"):
+        token = _RELAY_AUX_CALL_CONTEXT.set({
+            "task": str(task or "unknown"),
+            "request_id": f"aux-{uuid.uuid4().hex}",
+            "attempt_count": 0,
+            "provider": "",
+            "model": "",
+            "response_model": None,
+            "api_mode": "chat_completions",
+        })
+        try:
+            yield
+        except BaseException:
+            _fail_relay_auxiliary_call()
+            raise
+        finally:
+            _RELAY_AUX_CALL_CONTEXT.reset(token)
 
 
 def _relay_auxiliary_call(callback):
