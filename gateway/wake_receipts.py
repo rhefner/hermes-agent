@@ -18,7 +18,12 @@ import time
 
 from hermes_constants import get_hermes_home
 from hermes_cli.config_defaults import DEFAULT_CONFIG
-from yaml import YAMLError
+
+try:
+    from yaml import YAMLError as _PyYAMLError
+    YAML_ERRORS: tuple = (_PyYAMLError,)
+except ImportError:  # gateway runtime python ships no PyYAML (config uses the internal reader);
+    YAML_ERRORS = ()  # the marker can then never be raised here.
 
 ROUTE_FIELDS = ("platform", "chat_id", "chat_type", "thread_id", "user_id", "user_id_alt",
                 "scope_id", "parent_chat_id", "profile")
@@ -211,7 +216,7 @@ def origin_target(store, row):
             return target
         finally:
             db.close()
-    except (sqlite3.Error, OSError, ValueError, KeyError, TypeError, YAMLError):
+    except (sqlite3.Error, OSError, ValueError, KeyError, TypeError, *YAML_ERRORS):
         return None
 
 
