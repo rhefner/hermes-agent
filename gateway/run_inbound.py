@@ -20,6 +20,7 @@ import time
 from contextlib import suppress
 from pathlib import Path
 
+from agent.maintenance_admission import tracked as _maintenance_tracked, NOTICE as _MAINTENANCE_NOTICE
 from agent.i18n import t
 from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
@@ -1320,6 +1321,7 @@ class GatewayInboundMixin:
             logger.debug("FIFO orphan rescue pre-claim failed for %s", _quick_key, exc_info=True)
             return event, source, is_internal
 
+    @_maintenance_tracked("gateway-inbound", refused=_MAINTENANCE_NOTICE)
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """Handle an incoming message from any platform: auth → command check → running-agent
         interrupt → get/create session → build context → run agent → return response."""
@@ -1801,7 +1803,7 @@ class GatewayInboundMixin:
     async def _mark_durable_active_turn(self, event: "MessageEvent", session_key: str) -> bool:
         """Persist the exact resolved routing key for this running turn."""
         try:
-            token = await self.async_session_store.mark_turn_active(session_key)
+            token = await self.async_session_store.mark_turn_active(session_key, replay_allowed=event._replay_on_restart)
         except Exception as exc:
             logger.warning("Could not persist active-turn marker for %s: %s", session_key, exc)
             return False

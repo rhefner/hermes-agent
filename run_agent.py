@@ -852,7 +852,13 @@ class AIAgent(
 
             # Carry the active profile into the review thread so MEMORY.md / skill review writes land in the
             # right profile.
-            threading.Thread(target=propagate_context_to_thread(_target_with_requeue), daemon=True, name="bg-review").start()
+            from agent.maintenance_admission import reserved_target
+            tracked_target, cancel_reservation = reserved_target(_target_with_requeue, "background-review")
+            try:
+                threading.Thread(target=propagate_context_to_thread(tracked_target), daemon=True, name="bg-review").start()
+            except BaseException:
+                cancel_reservation()
+                raise
         except Exception:
             finish_background_review_run(self, review_run)
             raise

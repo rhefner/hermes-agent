@@ -2121,6 +2121,14 @@ DEFAULT_CONFIG = {
         # boot (ambiguous cases carry a "recovered reply — may be a duplicate" marker;
         # at-least-once). Disable to lose in-flight final responses on crash/restart.
         "delivery_ledger": True,
+        "wake_outcomes": {
+            "enabled": False,
+            "admission_seconds": 300,
+            "idle_seconds": 1800,
+            "send_seconds": 30,
+            "retention_days": 30,
+            "batch_size": 100,
+        },
         # Seconds to wait for one platform to connect at startup/reconnect; raise on "discord
         # connect timed out" loops (many slash commands to sync). 0/negative = wait forever. Bridged
         # to HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT, which wins if set explicitly.

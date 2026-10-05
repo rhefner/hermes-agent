@@ -36,6 +36,7 @@ from typing import Any, Callable, Dict, List, Optional, Protocol, Union
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from cron.worker_bootstrap import WORKER_MARKER
+from agent.maintenance_admission import tracked as _maintenance_tracked
 from hermes_constants import get_hermes_home, hermes_home_key
 from hermes_cli.observability.shared_metrics_gateway import note_cron_execution, note_cron_skipped
 from cron.env_settings import cron_env_setting
@@ -2560,6 +2561,7 @@ class _FireAudit:
 
 
 
+@_maintenance_tracked("cron-job")
 def run_job(
     job: dict, *, defer_agent_teardown: Optional[list] = None, extra_prompt: Optional[str] = None,
     cancel_event: Optional[_CancelEventLike] = None, execution_id: Optional[str] = None,

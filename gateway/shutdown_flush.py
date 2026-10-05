@@ -191,6 +191,8 @@ def _json_safe(value: Any) -> bool:
 
 def _serialise_value(value: Any) -> Optional[dict]:
     """Convert a pending message value to a JSON-serialisable dict."""
+    if getattr(value, "_replay_on_restart", True) is False:
+        return None
     if hasattr(value, "text"):  # MessageEvent-like object
         result: Dict[str, Any] = {"text": getattr(value, "text", "")}
         for attr in ("session_id", "platform", "sender_id", "sender_name", "reply_to", "media",

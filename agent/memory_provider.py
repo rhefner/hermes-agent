@@ -30,7 +30,11 @@ def spawn_context_thread(target: Callable[..., Any], *, name: str, daemon: bool 
                          args: tuple = (), kwargs: Optional[Dict[str, Any]] = None) -> threading.Thread:
     """Unstarted thread running *target* under the spawner's contextvars (see :func:`ctx_bound`).
     Every memory-provider background job (prefetch, sync, writer loops) must go through this."""
-    return threading.Thread(target=ctx_bound(target), args=args, kwargs=kwargs, name=name, daemon=daemon)
+    from agent.maintenance_admission import _enabled
+    if not _enabled():
+        return threading.Thread(target=ctx_bound(target), args=args, kwargs=kwargs, name=name, daemon=daemon)
+    from agent.maintenance_threads import AdmissionThread
+    return AdmissionThread(target=target, args=args, kwargs=kwargs, name=name, daemon=daemon)
 
 # v1 = best-effort on_pre_compress() with the raw message list; v2 = opt-in fail-closed
 # checkpoint (normalized evidence handoff + strict-mode failure propagation).
