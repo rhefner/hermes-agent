@@ -900,6 +900,8 @@ class ToolRegistry:
         try:
             from agent.maintenance_inference import refuse_unverified_extension
             if self._plugin_owner_of(entry.handler) or entry.toolset.startswith("mcp"):
+                from agent.serving_execution_policy import check as check_serving_policy
+                check_serving_policy(name + ' ' + json.dumps(args, sort_keys=True))
                 refuse_unverified_extension()
             # Plugin contract (plugins/AGENTS.md): optional context kwargs (task_id, session_id, user_task,
             # parent_agent, ...) are signature-inspected like hook payloads, so a narrow ``handle(args)``

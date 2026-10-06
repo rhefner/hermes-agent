@@ -735,6 +735,12 @@ def execute_code(
     # SIGTERM'd the gateway mid-task.
     # The identity probe ends in a kernel process query that has wedged on macOS
     # (#111922); share the cell's own deadline and fail CLOSED when it renders no verdict.
+    from agent.serving_execution_policy import check as check_serving_policy
+    from agent.maintenance_inference import MaintenanceIsolationError
+    try:
+        check_serving_policy(code)
+    except MaintenanceIsolationError as exc:
+        return tool_error(str(exc))
     from agent.deadline import run_bounded_sync
     from tools.process_registry import _is_supervised_gateway_process
     from tools.terminal_tool import _PRE_EXEC_GUARD_MIN_TIMEOUT_S

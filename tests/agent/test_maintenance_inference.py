@@ -207,6 +207,8 @@ def test_dispatch_workers_reviewers_custom_spawns_refused(isolated, phase):
 
 
 def test_entry_verifies_every_profile_and_failure_stays_closed(isolated, monkeypatch):
+    # This test isolates all-profile probing; serving tests exercise real accounting.
+    monkeypatch.setattr('agent.serving_admission.observe', lambda model: {})
     homes = [isolated[1], isolated[1] / "second"]
     monkeypatch.setattr(ctl, "profiles", lambda: homes)
     probe = Mock(side_effect=[None, RuntimeError("auth failure")])

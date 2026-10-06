@@ -1318,6 +1318,12 @@ def _pre_exec_block(
     Order matters: gateway lifecycle first (protects the running gateway),
     then the dangerous-workdir check, then the self-repo guard (local only).
     """
+    from agent.serving_execution_policy import check as check_serving_policy
+    from agent.maintenance_inference import MaintenanceIsolationError
+    try:
+        check_serving_policy(command)
+    except MaintenanceIsolationError as exc:
+        raise _Rejected(_error_json(str(exc), status="blocked"))
     blocked = gateway_lifecycle_block(
         command=command, env=env, env_type=env_type, cwd=cwd, workdir=workdir, session_key=session_key,
     )
