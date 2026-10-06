@@ -16,6 +16,7 @@ import threading
 import time
 import weakref
 
+from agent import attestation_diagnostics as diagnostic
 from agent import maintenance_admission as accounting
 from agent import maintenance_inference as guard
 
@@ -94,8 +95,11 @@ class RuntimeAttestor:
         from hermes_cli.maintenance_inference import probe
         from hermes_constants import get_hermes_home
         agent = self.agent()
+        diagnostic.stage('active_state')
         value = active_state()
+        diagnostic.stage('observe')
         proof = observe(value['model'])
+        diagnostic.stage('runtime_match')
         if (agent is None or os.getpid() != self.identity['pid']
                 or proof['executor']['pid'] != os.getpid()
                 or agent.provider != 'openai-codex' or agent.model != value['model']
@@ -103,12 +107,14 @@ class RuntimeAttestor:
                 or str(get_hermes_home().resolve()) != proof['profile_home']
                 or message['proof'] != proof or message['state_sha256'] != digest(value)):
             refuse('runtime executor/route/state mismatch')
+        diagnostic.stage('action')
         action = message['action']
         if action not in ('certify', 'renew', 'check'):
             refuse('unknown attestation action')
         if self.evidence and (self.evidence['proof_sha256'] != digest(proof)
                               or self.evidence['state_sha256'] != digest(value)):
             self.evidence = None
+        diagnostic.stage('prior_evidence')
         if action == 'renew' and (self.evidence is None or message.get('previous') != self.evidence):
             refuse('renewal has no matching prior runtime certification')
         if action == 'certify' or (action == 'renew' and
@@ -116,7 +122,9 @@ class RuntimeAttestor:
             self.evidence = None  # Failed completion cannot leave old authority.
             challenge = secrets.token_hex(32)
             started = time.time()
+            diagnostic.stage('probe')
             probe(value['model'], challenge=challenge)  # No subprocess: exact executing PID.
+            diagnostic.stage('post_probe')
             if (time.time() - started > TIMEOUT - 5 or observe(value['model']) != proof
                     or active_state() != value or agent.provider != 'openai-codex'
                     or agent.model != value['model'] or agent.api_mode != 'codex_responses'
@@ -126,6 +134,7 @@ class RuntimeAttestor:
             self.evidence = {'executor': self.identity, 'provider': 'openai-codex',
                              'proof_sha256': digest(proof), 'state_sha256': digest(value),
                              'completion_nonce': challenge, 'completed_at': time.time()}
+        diagnostic.stage('fresh_evidence')
         if not self.evidence or not 0 <= time.time() - self.evidence['completed_at'] <= MAX_AGE:
             refuse('no fresh authenticated completion in executor runtime')
         return self.evidence
@@ -139,14 +148,20 @@ class RuntimeAttestor:
             with conn:
                 conn.settimeout(TIMEOUT)
                 try:
-                    if peer(conn)[1] != os.getuid():
-                        continue
-                    message = receive(conn)
-                    nonce = message['nonce']
-                    if not isinstance(nonce, str) or len(nonce) != 64:
-                        raise ValueError('invalid challenge')
-                    evidence = self.respond(message)
-                    result = {'ok': True, 'nonce': nonce, 'evidence': evidence}
+                    with diagnostic.capture():
+                        diagnostic.stage('peer')
+                        if peer(conn)[1] != os.getuid():
+                            continue
+                        diagnostic.stage('receive')
+                        message = receive(conn)
+                        diagnostic.action(message.get('action'))
+                        diagnostic.stage('frame')
+                        nonce = message['nonce']
+                        if not isinstance(nonce, str) or len(nonce) != 64:
+                            raise ValueError('invalid challenge')
+                        diagnostic.stage('imports')
+                        evidence = self.respond(message)
+                        result = {'ok': True, 'nonce': nonce, 'evidence': evidence}
                 except Exception:
                     self.evidence = None
                     result = {'ok': False}  # Never disclose SDK/auth exceptions.

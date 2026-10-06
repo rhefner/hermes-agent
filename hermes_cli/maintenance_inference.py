@@ -16,6 +16,7 @@ import tempfile
 import time
 
 import hermes_bootstrap  # noqa: F401 -- activate the managed runtime before provider imports
+from agent import attestation_diagnostics as diagnostic
 from agent import maintenance_inference as guard
 
 
@@ -54,26 +55,38 @@ def locked():
 
 
 def probe(model, *, challenge=None):
+    with diagnostic.capture('probe'):
+        return _probe(model, challenge=challenge)
+
+
+def _probe(model, *, challenge=None):
     """Authenticated completion through the ACTUAL runtime and auxiliary clients."""
     from hermes_cli.runtime_provider import resolve_runtime_provider
     from agent.auxiliary_client import resolve_provider_client
+    diagnostic.stage('runtime_resolve')
     runtime = resolve_runtime_provider(requested="openai-codex", target_model=model,
                                        explicit_base_url=guard.CLOUD_BASE)
+    diagnostic.stage('runtime_check')
     if (runtime.get("provider") != "openai-codex" or not guard.cloud_url(runtime.get("base_url"))
             or runtime.get("api_mode") != "codex_responses"):
         raise guard.MaintenanceIsolationError("Probe runtime is not independent Codex cloud")
     guard.require_route(runtime.get("provider"), model, runtime.get("base_url"),
                         runtime.get("api_mode"), resolved=True)
+    diagnostic.stage('client_resolve')
     client, actual = resolve_provider_client("openai-codex", model,
         explicit_base_url=guard.CLOUD_BASE, api_mode="codex_responses")
+    diagnostic.stage('client_check')
     if (client is None or actual != model or not guard.cloud_url(getattr(client, "base_url", None))
             or any(os.environ.get(k) for k in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"))):
         raise guard.MaintenanceIsolationError("Independent external client/auth unavailable or proxy configured")
     expected = "MAINTENANCE_OK" if challenge is None else "MAINTENANCE_OK_" + challenge
+    diagnostic.stage('completion_call')
     result = client.chat.completions.create(model=model, messages=[
         {"role": "user", "content": "Reply with exactly " + expected + "."}],
         **({"timeout": 25} if challenge is not None else {}))
+    diagnostic.stage('completion_check')
     text = result.choices[0].message.content
+    diagnostic.completion(bool(text), bool(text) and text.strip() == expected)
     if not text or text.strip() != expected:
         raise guard.MaintenanceIsolationError("Independent external completion did not pass")
 
