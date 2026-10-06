@@ -86,8 +86,11 @@ def receipt_fixture(isolated, monkeypatch):
     value = activate()
     proof = {'executor': {'pid': 123}, 'control': {'owner': 'a' * 32, 'expires': time.time() + 1000}}
     monkeypatch.setattr(a, 'observe', lambda model: proof)
-    receipt = {'version': 1, 'verified_at': time.time(), 'state_sha256': a.digest(value),
-               'proof': proof, 'completion': 'MAINTENANCE_OK'}
+    from agent import executor_attestation as att
+    evidence = {'completed_at': time.time(), 'fixture': 'mock exact executor transport'}
+    monkeypatch.setattr(att, 'request', lambda *args: evidence)
+    receipt = {'version': 2, 'verified_at': evidence['completed_at'], 'state_sha256': a.digest(value),
+               'proof': proof, 'attestation': evidence}
     path = isolated / 'serving.json'
     path.write_text(json.dumps(receipt)); path.chmod(0o600)
     return receipt, path
@@ -129,10 +132,11 @@ def test_drained_flag_cannot_forge_observed_drain(isolated, monkeypatch):
 def test_certification_requires_actual_probe_and_preserves_failure(isolated, monkeypatch):
     activate()
     monkeypatch.setattr(a, 'observe', lambda model: {'profile_home': str(isolated.parent)})
+    from agent import executor_attestation as att
     probe = Mock(side_effect=RuntimeError('fixture external failure'))
-    monkeypatch.setattr(ctl, 'probe_profile', probe)
+    monkeypatch.setattr(att, 'request', probe)
     with pytest.raises(RuntimeError): a.certify()
-    assert not (isolated / 'serving.json').exists()
+    assert json.loads((isolated / 'serving.json').read_text())['invalidated'] is True
     assert guard.state()['phase'] == 'active'
     probe.assert_called_once()
 

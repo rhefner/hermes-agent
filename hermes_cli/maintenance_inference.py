@@ -53,7 +53,7 @@ def locked():
         yield
 
 
-def probe(model):
+def probe(model, *, challenge=None):
     """Authenticated completion through the ACTUAL runtime and auxiliary clients."""
     from hermes_cli.runtime_provider import resolve_runtime_provider
     from agent.auxiliary_client import resolve_provider_client
@@ -69,10 +69,12 @@ def probe(model):
     if (client is None or actual != model or not guard.cloud_url(getattr(client, "base_url", None))
             or any(os.environ.get(k) for k in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"))):
         raise guard.MaintenanceIsolationError("Independent external client/auth unavailable or proxy configured")
+    expected = "MAINTENANCE_OK" if challenge is None else "MAINTENANCE_OK_" + challenge
     result = client.chat.completions.create(model=model, messages=[
-        {"role": "user", "content": "Reply with exactly MAINTENANCE_OK."}])
+        {"role": "user", "content": "Reply with exactly " + expected + "."}],
+        **({"timeout": 25} if challenge is not None else {}))
     text = result.choices[0].message.content
-    if not text or text.strip() != "MAINTENANCE_OK":
+    if not text or text.strip() != expected:
         raise guard.MaintenanceIsolationError("Independent external completion did not pass")
 
 
