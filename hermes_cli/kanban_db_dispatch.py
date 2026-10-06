@@ -2014,6 +2014,8 @@ def dispatch_once(
 def _call_spawn_fn(spawn_fn, task: Task, workspace: str, board: Optional[str]) -> Optional[int]:
     """Back-compat: older spawn_fn signatures (and test stubs) accept only
     ``(task, workspace)``; pass ``board`` only when the callable supports it."""
+    from agent.maintenance_inference import refuse_unverified_extension
+    refuse_unverified_extension()  # includes reviewer/custom dispatch callbacks
     import inspect
     try:
         sig = inspect.signature(spawn_fn)
@@ -2939,6 +2941,12 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     # older hermes builds on PATH that predate the flag's precedence.
     env.pop("HERMES_TUI", None)
 
+    from agent.maintenance_inference import dispatch_route, MaintenanceIsolationError
+    if dispatch_route(profile_home):
+        # Arbitrary runners and task pins cannot be attested by the dispatcher.
+        raise MaintenanceIsolationError(
+            "Kanban dispatch paused by maintenance inference isolation; launch a verified "
+            "external worker explicitly. No unverified child was spawned.")
     cmd = _worker_argv(task, profile_arg, env.get("HERMES_HOME"))
     # The module argv must carry the import context that made it resolvable:
     # the shim's in-process path injection is invisible to the bare child.

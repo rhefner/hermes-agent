@@ -898,6 +898,9 @@ class ToolRegistry:
         if not entry:
             return tool_error(f"Unknown tool: {name}")
         try:
+            from agent.maintenance_inference import refuse_unverified_extension
+            if self._plugin_owner_of(entry.handler) or entry.toolset.startswith("mcp"):
+                refuse_unverified_extension()
             # Plugin contract (plugins/AGENTS.md): optional context kwargs (task_id, session_id, user_task,
             # parent_agent, ...) are signature-inspected like hook payloads, so a narrow ``handle(args)``
             # plugin handler is not broken by every field the dispatcher injects (#68318).
