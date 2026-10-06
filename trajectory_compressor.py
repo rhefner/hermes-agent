@@ -317,6 +317,8 @@ class TrajectoryCompressor:
         else:
             # Custom endpoint — use config's raw base_url + api_key_env
             api_key = os.getenv(self.config.api_key_env)
+            from agent.maintenance_inference import refuse_unverified_extension
+            refuse_unverified_extension()
             if not api_key:
                 raise RuntimeError(f"Missing API key. Set {self.config.api_key_env} environment variable.")
             from openai import OpenAI
@@ -465,6 +467,8 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                     from agent.auxiliary_client import call_llm
                     response = call_llm(provider=self._llm_provider, temperature=temperature, **kwargs)
                 else:
+                    from agent.maintenance_inference import refuse_unverified_extension
+                    refuse_unverified_extension()
                     response = self.client.chat.completions.create(**kwargs)
                 return self._finish_summary(response)
             except Exception as e:
@@ -484,6 +488,8 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                     from agent.auxiliary_client import async_call_llm
                     response = await async_call_llm(provider=self._llm_provider, temperature=temperature, **kwargs)
                 else:
+                    from agent.maintenance_inference import refuse_unverified_extension
+                    refuse_unverified_extension()
                     response = await self._get_async_client().chat.completions.create(**kwargs)
                 return self._finish_summary(response)
             except Exception as e:

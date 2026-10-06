@@ -175,6 +175,9 @@ def _openai_http_client_kwargs(base_url: Optional[str], *, async_mode: bool = Fa
                 "back to the SDK default HTTP client. Run `hermes update` (or "
                 "reinstall the Desktop app) to resync the runtime.")
         client = None
+    from agent.maintenance_inference import state, MaintenanceIsolationError
+    if client is None and state():
+        raise MaintenanceIsolationError("Guarded HTTP transport unavailable; refusing unguarded SDK fallback")
     return {"http_client": client} if client is not None else {}
 
 
@@ -2659,6 +2662,8 @@ def _relay_sync_completion(
     client: Any, kwargs: dict[str, Any], *, provider: str | None = None,
     api_mode: str | None = None, create: Callable[[dict[str, Any]], Any] | None = None,
 ) -> Any:
+    from agent.maintenance_inference import require_route
+    require_route(provider, kwargs.get("model"), getattr(client, "base_url", None), api_mode, resolved=True)
     from agent.auxiliary_wire import prepare_chat_messages
 
     kwargs = prepare_chat_messages(client, kwargs)
@@ -2693,6 +2698,8 @@ async def _relay_async_completion(
     client: Any, kwargs: dict[str, Any], *, provider: str | None = None,
     api_mode: str | None = None, create: Callable[[dict[str, Any]], Any] | None = None,
 ) -> Any:
+    from agent.maintenance_inference import require_route
+    require_route(provider, kwargs.get("model"), getattr(client, "base_url", None), api_mode, resolved=True)
     from agent.auxiliary_wire import prepare_chat_messages
 
     kwargs = prepare_chat_messages(client, kwargs)
@@ -2722,6 +2729,8 @@ async def _relay_async_completion(
 def _relay_sync_stream(
     client: Any, kwargs: dict[str, Any], *, provider: str | None = None, api_mode: str | None = None
 ) -> Any:
+    from agent.maintenance_inference import require_route
+    require_route(provider, kwargs.get("model"), getattr(client, "base_url", None), api_mode, resolved=True)
     from agent.auxiliary_wire import prepare_chat_messages
 
     kwargs = prepare_chat_messages(client, kwargs)
@@ -5468,6 +5477,9 @@ def resolve_provider_client(
     (full auto-detection chain). ``model=None`` → provider's default aux model. ``raw_codex`` → bare OpenAI
     client for ``responses.stream()`` callers. ``api_mode`` forces "codex_responses"/"chat_completions"/
     "anthropic_messages" instead of auto-detect. Returns (client, resolved_model) or (None, None)."""
+    from agent.maintenance_inference import auxiliary_route
+    provider, model, explicit_base_url, explicit_api_key, api_mode = auxiliary_route(
+        provider, model, explicit_base_url, explicit_api_key, api_mode)
     _validate_proxy_env_urls()
     # Keep the pre-alias name so a custom_providers entry named like a built-in alias
     # (e.g. "kimi" → "kimi-coding") is still reachable via the named-custom branch.
@@ -5526,6 +5538,14 @@ def resolve_provider_client(
         provider, original_provider, model, async_mode, raw_codex,
         explicit_base_url, explicit_api_key, api_mode, main_runtime, is_vision, task,
     )
+    def checked(result):
+        from agent.maintenance_inference import require_route, state, MaintenanceIsolationError
+        client, final_model = result
+        if state() and client is None:
+            raise MaintenanceIsolationError("Independent Codex authentication/client unavailable; no local fallback permitted")
+        require_route(provider, final_model, getattr(client, "base_url", None), api_mode, resolved=True)
+        return result
+
     branch = _EXPLICIT_PROVIDER_BRANCHES.get(provider)
     alias_identity = original_provider.removeprefix("custom:")
     # A configured provider whose name collides with a local-server alias is still a named
@@ -5537,12 +5557,12 @@ def resolve_provider_client(
         except ImportError:
             result = None
         if result is not None:
-            return result
+            return checked(result)
     if branch is not None:
-        return branch(req)
+        return checked(branch(req))
     if provider == "azure-foundry":
-        return _resolve_azure_foundry_branch(req)
-    return _resolve_registry_branch(req)
+        return checked(_resolve_azure_foundry_branch(req))
+    return checked(_resolve_registry_branch(req))
 
 
 # ── Public API ──────────────────────────────────────────────────────────────
@@ -5731,6 +5751,12 @@ def resolve_vision_provider_client(
     Direct endpoint overrides beat provider selection; explicit providers may force
     experimental backends; auto mode only tries backends known to work.
     """
+    from agent.maintenance_inference import state
+    maintenance = state()
+    if maintenance:
+        client, final_model = resolve_provider_client(maintenance["provider"], maintenance["model"],
+            async_mode=async_mode, is_vision=True)
+        return maintenance["provider"], client, final_model
     runtime = _normalize_main_runtime(main_runtime)
     requested, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         "vision", provider, model, base_url, api_key
@@ -6062,6 +6088,8 @@ def _get_cached_client(
     previously occurred in long-running gateways where recycled worker threads created unbounded entries
     (#10200).
     """
+    from agent.maintenance_inference import auxiliary_route
+    provider, model, base_url, api_key, api_mode = auxiliary_route(provider, model, base_url, api_key, api_mode)
     # A bare llama.cpp alias keys on the live local endpoint: a restarted server (new port/key)
     # must not be served the old client, and a stopped one resolves to nothing, not a cloud client.
     from agent.auxiliary_local_runtime import bare_llamacpp_endpoint
@@ -6217,6 +6245,9 @@ def _resolve_task_provider_model(
     but a first-class provider + base_url keeps the provider identity so its auth/transport
     shaping still applies. api_mode is "chat_completions", "codex_responses", or None (auto).
     """
+    from agent.maintenance_inference import auxiliary_route, state
+    if state():
+        return auxiliary_route(provider, model, base_url, api_key, None)
     cfg_provider = cfg_model = cfg_base_url = cfg_api_key = resolved_api_mode = None
     if task:
         task_config = _get_auxiliary_task_config(task)

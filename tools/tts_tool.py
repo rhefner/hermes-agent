@@ -427,6 +427,8 @@ def text_to_speech_tool(
     Text is normalized, split into provider-safe chunks (never silently truncated), synthesized
     sequentially, then packed against the platform's upload limit: a failed combine keeps the
     separate valid files and no over-limit artifact is ever returned."""
+    from agent.maintenance_inference import refuse_unverified_extension
+    refuse_unverified_extension()
     if not text or not text.strip():
         return tool_error("Text is required", success=False)
     try:  # shared cleaner: markdown, emoji, think blocks, verifier footer, units, newlines

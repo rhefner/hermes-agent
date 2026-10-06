@@ -2581,6 +2581,11 @@ def run_job(
     ``extra_prompt``: optional per-run context from ``cronjob(action='run', prompt=...)`` (#57331). Appended
     to the stored prompt for this fire only — never persisted to the job definition.
     """
+    from agent.maintenance_inference import state, NOTICE
+    if state():
+        # Job scripts (including no_agent jobs) and pinned fallback configs are
+        # unverified dispatch. Stop BEFORE prompt/script preparation side effects.
+        return False, "", "", NOTICE
     job_id = job["id"]
     job_name = str(job.get("name") or job.get("prompt") or job_id or "cron job")
 

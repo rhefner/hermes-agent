@@ -998,6 +998,8 @@ def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_ke
     target_model overrides model_cfg["default"] when computing provider-specific api_mode (e.g.
     OpenCode Zen/Go where different models route through different API surfaces)."""
     requested_provider = resolve_requested_provider(requested)
+    from agent.maintenance_inference import require_route
+    require_route(requested_provider, target_model, explicit_base_url)
     _raise_if_provider_disabled(requested_provider)
     # Same alias expansion the auxiliary client applies, so ``provider: openai`` means one thing on
     # every path (background review, curator, MoA slots, delegation) instead of "Unknown provider".
@@ -1018,6 +1020,7 @@ def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_ke
         logger.info("model.openai_runtime=codex_app_server overrides the %s runtime (source=%s); its credential/endpoint "
                     "is not used — the app-server authenticates with its own login", runtime.get("provider"), runtime.get("source"))
     runtime["api_mode"] = api_mode
+    require_route(runtime.get("provider"), target_model, runtime.get("base_url"), api_mode, resolved=True)
     return runtime
 
 

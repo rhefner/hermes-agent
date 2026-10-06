@@ -424,6 +424,14 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     ``provider`` set → full bundle via the runtime provider system (same path as CLI/gateway startup); neither →
     None values, child inherits everything. ``request_overrides`` is honored on every branch. Raises ValueError
     with a user-facing message."""
+    from agent.maintenance_inference import dispatch_route
+    from hermes_constants import get_hermes_home
+    maintenance = dispatch_route(get_hermes_home())
+    if maintenance:
+        # Discard secondary overrides, keys, commands and request overrides.
+        return _runtime_provider_credentials(
+            {"provider": maintenance["provider"], "model": maintenance["model"],
+             "base_url": maintenance["base_url"], "api_key": None, "api_mode": "codex_responses"}, None)
     values = {k: str(cfg.get(k) or "").strip() or None for k in ("model", "provider", "base_url", "api_key")}
     values["api_mode"] = str(cfg.get("api_mode") or "").strip().lower() or None
     explicit_request_overrides = cfg.get("request_overrides") if isinstance(cfg.get("request_overrides"), dict) else None
@@ -579,6 +587,10 @@ def _resolve_child_runtime(
     except Exception as exc:
         logger.debug("Could not load delegation reasoning_effort: %s", exc)
 
+    from agent.maintenance_inference import require_route, state, MaintenanceIsolationError
+    require_route(effective_provider, effective_model, effective_base_url, effective_api_mode, resolved=True)
+    if state() and effective_acp_command:
+        raise MaintenanceIsolationError("Maintenance isolation refuses unverified delegation commands")
     kwargs: Dict[str, Any] = {
         "base_url": effective_base_url, "api_key": override_api_key or parent_api_key, "model": effective_model,
         "provider": effective_provider, "requested_provider": effective_requested_provider,

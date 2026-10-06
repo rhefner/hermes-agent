@@ -2423,6 +2423,10 @@ def init_agent(
     side_agent: bool = False, memory_manager=None,
     tool_result_metadata_callback: Optional[Callable[..., dict]] = None,
 ):
+    from agent.maintenance_inference import require_route, require_agent, state, MaintenanceIsolationError
+    require_route(provider, model, base_url, api_mode, resolved=True)
+    if state() and (acp_command or command):
+        raise MaintenanceIsolationError("Maintenance isolation refuses unverified process transports")
     _install_safe_stdio()
 
     _params = locals()
@@ -2463,6 +2467,7 @@ def init_agent(
     agent.acp_args = list(acp_args or args or [])
     _resolve_api_mode(agent, api_mode, provider_name, base_url)
     _finalize_routing(agent, api_mode, credential_pool)
+    require_agent(agent)
 
     # Platform callbacks are stored under their parameter names verbatim.
     for _cb in _CALLBACK_PARAMS:

@@ -155,6 +155,8 @@ def _normalize_reference_images(value: Any) -> Optional[List[str]]:
 
 
 def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
+    from agent.maintenance_inference import refuse_unverified_extension
+    refuse_unverified_extension()
     prompt = (args.get("prompt") or "").strip()
     image_url = (args.get("image_url") or "").strip() or None
     reference_image_urls = _normalize_reference_images(args.get("reference_image_urls"))

@@ -1011,6 +1011,10 @@ class _InlineRequest:
         return client
 
 
+from agent.maintenance_inference import guarded_agent_call
+
+
+@guarded_agent_call
 def direct_api_call(agent, api_kwargs: dict):
     """Run a non-streaming LLM call inline on the conversation thread (cron turns,
     delegated children — see ``should_use_direct_api_call``): no interrupt worker,
@@ -1290,6 +1294,7 @@ def _codex_silent_hang_hint(agent, api_kwargs: dict) -> Optional[str]:
 
 
 
+@guarded_agent_call
 def interruptible_api_call(agent, api_kwargs: dict):
     """Run the API call on a worker thread so the caller can detect interrupts
     without waiting for the full HTTP round-trip. Each worker gets its own
@@ -2075,6 +2080,11 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
     """Switch to the next fallback model/provider in the chain; False when exhausted. Swaps client,
     model slug and provider in place so the retry loop continues on the new backend; client
     construction goes through resolve_provider_client (no duplicated provider→key mappings)."""
+    from agent.maintenance_inference import state
+    if state():
+        # Authentication/quota failures of the approved route are fatal during
+        # maintenance. Do not mutate the agent into a configured local fallback.
+        return False
     from agent.fallback_cooldown import _arm_rate_limit_cooldown, switch_deferred_by_reset
     if switch_deferred_by_reset(agent, reason, reset_at):
         return False
@@ -4102,6 +4112,7 @@ class _StreamingCall(StreamingWaitMonitor):
         return self.result["response"]
 
 
+@guarded_agent_call
 def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=None):
     """Streaming variant of _interruptible_api_call: fires the delta callbacks per
     text token (tool-call turns suppress them) and returns a SimpleNamespace in

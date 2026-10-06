@@ -215,6 +215,13 @@ class PluginDispatchMixin:
         closed with a block directive, others skip. ``_HOOK_CALLER_THREAD_HOOKS`` always run on the
         caller thread. ``pre_llm_call`` may return ``{"context": "..."}`` (or a str) to inject.
         """
+        from agent.maintenance_inference import state
+        if state():
+            # Plugin hooks may invoke arbitrary local inference outside core clients.
+            # Policy hooks must block, not silently lose their veto.
+            if hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS:
+                return [{"action": "block", "message": "Maintenance isolation: unverified policy plugin hooks are disabled"}] if self._hooks.get(hook_name) else []
+            return []
         from hermes_cli.plugins import _resolve_hook_callback_timeout
         # Gateway platform events define event-local envelopes; a bus-wide version here would turn
         # unrelated adapter payloads into one monolithic compatibility contract.

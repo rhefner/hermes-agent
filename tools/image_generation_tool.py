@@ -764,6 +764,8 @@ def _confine_source_images(image_url, reference_image_urls, task_id, *, permitte
 
 
 def _handle_image_generate(args, **kw):
+    from agent.maintenance_inference import refuse_unverified_extension
+    refuse_unverified_extension()
     prompt = args.get("prompt", "")
     if not prompt:
         return tool_error("prompt is required for image generation")

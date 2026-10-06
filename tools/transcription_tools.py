@@ -538,6 +538,8 @@ def transcribe_audio(
     file_path: str, model: Optional[str] = None, source: Optional[str] = None) -> Dict[str, Any]:
     """Validate, preprocess supported inputs, and dispatch transcription. ``source`` is a caller-surface
     label (``"gateway"``, ``"voice_mode"``) forwarded to the ``pre_transcription`` hook only."""
+    from agent.maintenance_inference import refuse_unverified_extension
+    refuse_unverified_extension()
     # Secret-store refusal runs before ANY validation so the error names the real reason.
     blocked = _read_block_error(file_path)
     if blocked:
@@ -562,6 +564,8 @@ def transcribe_audio(
 def transcribe_audio_local_fallback(file_path: str, model: Optional[str] = None) -> Dict[str, Any]:
     """Try an already-installed local STT backend without changing config: passive inbound-media
     recovery after the configured provider failed — never lazy-installs or falls through to cloud."""
+    from agent.maintenance_inference import refuse_unverified_extension
+    refuse_unverified_extension()
     error = _validate_audio_file(file_path)
     if error:
         return error

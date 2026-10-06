@@ -371,6 +371,9 @@ class MemoryManager:
         results: List[Any] = []
         for provider in self._providers if providers is None else providers:
             try:
+                if provider.name != "builtin":
+                    from agent.maintenance_inference import refuse_unverified_extension
+                    refuse_unverified_extension()
                 results.append(call(provider))
             except Exception as e:
                 logger.log(level, "Memory provider '%s' %s: %s", provider.name, label, e, exc_info=exc_info)
@@ -464,6 +467,8 @@ class MemoryManager:
 
         def _run() -> None:
             try:
+                from agent.maintenance_inference import refuse_unverified_extension
+                refuse_unverified_extension()
                 result_box["value"] = provider.prefetch(query, session_id=session_id) or ""
             except Exception as exc:  # pragma: no cover - re-raised by caller
                 result_box["error"] = exc
@@ -647,6 +652,9 @@ class MemoryManager:
             return tool_error(f"No memory provider handles tool '{tool_name}'")
         from hermes_cli.observability.shared_metrics_loop import record_provider_memory_call
         try:
+            if provider.name != "builtin":
+                from agent.maintenance_inference import refuse_unverified_extension
+                refuse_unverified_extension()
             result = provider.handle_tool_call(tool_name, args, **kwargs)
         except Exception as e:
             logger.error("Memory provider '%s' handle_tool_call(%s) failed: %s", provider.name, tool_name, e)
@@ -751,6 +759,9 @@ class MemoryManager:
             if is_checkpoint_provider and _accepts_require_checkpoint(provider.on_pre_compress):
                 kwargs["require_checkpoint"] = require_checkpoint
             try:
+                if provider.name != "builtin":
+                    from agent.maintenance_inference import refuse_unverified_extension
+                    refuse_unverified_extension()
                 result = provider.on_pre_compress(provider_messages, **kwargs)
                 if result and result.strip():
                     parts.append(result)
