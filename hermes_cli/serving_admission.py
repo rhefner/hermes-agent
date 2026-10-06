@@ -11,15 +11,21 @@ from agent import serving_admission as admission
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('check', 'renew', 'certify', 'status', 'enroll', 'close'))
+    parser.add_argument('action', choices=('check', 'renew', 'certify', 'status', 'enroll', 'close', 'recover'))
     parser.add_argument('--owner')
     parser.add_argument('--executor-pid', type=int)
     parser.add_argument('--seconds', type=int, default=3600)
     parser.add_argument('--json', action='store_true')
+    parser.add_argument('--acknowledge-recovery')
     args = parser.parse_args()
     root = guard.directory().parent / 'maintenance-admission'
     try:
-        if args.action == 'enroll':
+        if args.action == 'recover':
+            from agent.executor_recovery import recover
+            print(json.dumps(recover(root, owner=args.owner, executor_pid=args.executor_pid,
+                                     seconds=args.seconds,
+                                     acknowledgement=args.acknowledge_recovery)))
+        elif args.action == 'enroll':
             if admission.runtime_inventory():
                 admission.refuse('offline enrollment requires all Hermes runtimes stopped; preserve/resume conversations first')
             accounting.initialize(root)
