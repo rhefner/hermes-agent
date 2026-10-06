@@ -15,6 +15,7 @@ from typing import NoReturn
 
 from agent import maintenance_admission as accounting
 from agent import maintenance_inference as guard
+from agent.runtime_argv import runtime_argv, runtime_kind
 
 MAX_AGE = 120
 SOURCE = Path(__file__).resolve().parent.parent
@@ -63,6 +64,7 @@ def process(pid):
 
 
 def option(argv, *names):
+    argv = runtime_argv(argv) or []
     value = None
     for i, word in enumerate(argv):
         for name in names:
@@ -74,16 +76,7 @@ def option(argv, *names):
 
 
 def is_runtime(argv):
-    if not argv:
-        return False
-    executable = Path(argv[0]).name
-    if executable == 'hermes':
-        return True
-    if not executable.startswith(('python', 'hermes')):
-        return False
-    return any(a in ('hermes_cli.main', 'run_agent.py') or
-               Path(a).name in ('hermes', 'run_agent.py') or
-               (a.startswith(str(SOURCE) + '/') and a.endswith('.py')) for a in argv[1:])
+    return runtime_argv(argv) is not None
 
 
 def runtime_inventory():
@@ -123,7 +116,7 @@ def observe(model):
     fingerprint, newest = source_identity()
     executor = process(control['executor']['pid'])
     argv = executor['argv']
-    if (not is_runtime(argv) or option(argv, '--provider') != 'openai-codex'
+    if (runtime_kind(argv) != 'cli' or option(argv, '--provider') != 'openai-codex'
             or option(argv, '-m', '--model') != model
             or 'gateway' in argv or 'hermes-gateway' in executor['cgroup']):
         refuse('executor must be a live independent Hermes CLI with explicit Codex provider/model')

@@ -1,0 +1,32 @@
+{
+  "401845": [
+    "/home/hef/.hermes/tools/python-3.14.7+20260901-linux-x64/bin/python3",
+    "-I",
+    "-c",
+    "import sys, runpy; sys.path.insert(0, '/home/hef/.hermes/hermes-agent'); sys.argv = ['/home/hef/.hermes/hermes-agent/hermes_cli/main.py', '--provider', 'openai-codex', '--model', 'gpt-6-astra', '--resume', '20261005_212622_16a997']; runpy.run_module('hermes_cli.main', run_name='__main__', alter_sys=True)"
+  ],
+  "403831": [
+    "/home/hef/.hermes/tools/python-3.14.7+20260901-linux-x64/bin/python3",
+    "-I",
+    "-c",
+    "import sys, runpy; sys.path.insert(0, '/home/hef/.hermes/hermes-agent'); sys.argv = ['/home/hef/.hermes/hermes-agent/hermes_cli/main.py', 'gateway', 'run']; runpy.run_module('hermes_cli.main', run_name='__main__', alter_sys=True)"
+  ],
+  "403850": [
+    "/home/hef/.hermes/tools/python-3.14.7+20260901-linux-x64/bin/python3",
+    "-I",
+    "-c",
+    "import os, re, sys\nos.environ.pop('PYTHONHOME', None)\nos.environ.pop('PYTHONPATH', None)\nsys.path.insert(0, '/home/hef/.hermes/hermes-agent')\nif sys.argv[1:2] == ['--print-runtime-command']: sys.dont_write_bytecode = True\nfrom hermes_constants import get_default_hermes_root\nos.environ['HERMES_HOME'] = os.environ.get('HERMES_HOME') or str(get_default_hermes_root())\nif sys.argv[1:2] == ['--print-runtime-command']:\n    from pathlib import Path\n    from hermes_cli._launchers import print_runtime_command\n    print_runtime_command(Path('/home/hef/.hermes/hermes-agent'), sys.argv[2:])\n    sys.exit(0)\nimport hermes_bootstrap\nif sys.argv[1:2] == ['--run-module']:\n    import runpy\n    if len(sys.argv) < 3: sys.exit('hermes: --run-module needs a module')\n    module = sys.argv.pop(2)\n    del sys.argv[1]\n    runpy.run_module(module, run_name='__main__', alter_sys=True)\n    sys.exit(0)\nfrom hermes_cli.main import main\nsys.argv[0] = re.sub(r'(-script\\.pyw|\\.exe)?$', '', sys.argv[0])\nsys.exit(main())\n",
+    "dashboard",
+    "--host",
+    "0.0.0.0",
+    "--port",
+    "9119",
+    "--no-open"
+  ],
+  "489505": [
+    "/home/hef/.hermes/tools/python-3.14.7+20260901-linux-x64/bin/python3",
+    "-I",
+    "-c",
+    "import sys, runpy; sys.path.insert(0, '/home/hef/.hermes/hermes-agent'); sys.argv = ['/home/hef/.hermes/hermes-agent/venv/bin/hermes', '--profile', 'default', 'chat', '--provider', 'openai-codex', '--model', 'gpt-6-astra', '--ignore-user-config', '--oneshot', '--max-turns', '90', '--run-budget', '1800', '-Q', '--query-file', '/home/hef/.hermes/cache/scratch/maintenance-live-repair-task.md']; runpy.run_path('/home/hef/.hermes/hermes-agent/venv/bin/hermes', run_name='__main__')"
+  ]
+}

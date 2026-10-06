@@ -159,7 +159,7 @@ class RuntimeAttestor:
 def register(agent):
     """Called after real CLI agent initialization; non-CLI/background agents excluded."""
     global _server
-    from agent.serving_admission import process, is_runtime, option
+    from agent.serving_admission import process, runtime_kind, option
     # Non-Codex/non-Linux CLIs have no attestation capability; normal chat is
     # unchanged and serving admission still refuses the missing capability.
     if (os.name != 'posix' or not hasattr(socket, 'SO_PEERCRED')
@@ -168,7 +168,7 @@ def register(agent):
         return
     current = process(os.getpid())
     argv = current['argv']
-    if (not is_runtime(argv) or 'gateway' in argv or 'hermes-gateway' in current['cgroup']
+    if (runtime_kind(argv) != 'cli' or 'hermes-gateway' in current['cgroup']
             or option(argv, '--provider') != 'openai-codex'
             or option(argv, '-m', '--model') != agent.model
             or agent.provider != 'openai-codex' or agent.api_mode != 'codex_responses'
