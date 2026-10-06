@@ -32,7 +32,8 @@ class AdmissionClosed(RuntimeError):
 
 
 def directory():
-    return get_default_hermes_root() / "maintenance-admission"
+    from agent.maintenance_inference import directory as isolation_directory
+    return isolation_directory().parent / "maintenance-admission"
 
 
 def identity(pid=None):
@@ -84,6 +85,10 @@ def initialize(root):
         c.execute('CREATE TABLE control (id INTEGER PRIMARY KEY CHECK(id=1), body TEXT NOT NULL)')
         c.execute('CREATE TABLE work (id TEXT PRIMARY KEY, identity TEXT NOT NULL, kind TEXT NOT NULL)')
         c.execute('INSERT INTO control VALUES (1, ?)', (json.dumps({'version': 1, 'closed': False}),))
+    fd = os.open(root / 'enrollment.json', os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    with os.fdopen(fd, 'w') as f:
+        json.dump({'version': 1, 'enrolled_at': time.time()}, f)
+        f.flush(); os.fsync(f.fileno())
 
 
 def _control(c):

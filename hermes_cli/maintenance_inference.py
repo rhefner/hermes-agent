@@ -100,6 +100,8 @@ def enter(model, *, drained):
         value = {"version": 1, "phase": "verifying", "provider": "openai-codex", "model": model,
                  "base_url": guard.CLOUD_BASE, "verified_profiles": [], "entered_at": time.time()}
         write_state(value)
+        from agent.serving_admission import observe
+        observe(model)  # Real closed accounting/runtime/executor, not --drained.
         homes = profiles()
         for home in homes:
             probe_profile(home, model)
@@ -107,6 +109,7 @@ def enter(model, *, drained):
             write_state(value)
         if profiles() != homes:
             raise guard.MaintenanceIsolationError("Profile inventory changed during verification; retry entry")
+        observe(model)  # Recheck after probes before granting active isolation.
         value["phase"] = "active"
         write_state(value)
         if guard.state() != value:
