@@ -158,45 +158,88 @@ def active_state():
     return value
 
 
-def certify():
-    from hermes_cli.maintenance_inference import locked, probe_profile
+def save_receipt(receipt):
     import tempfile
-    with locked():
-        value = active_state()
-        before = observe(value['model'])
-        probe_profile(Path(before['profile_home']), value['model'])
-        after = observe(value['model'])
-        if before != after or active_state() != value:
-            refuse('runtime/state changed during authenticated external verification')
-        receipt = {'version': 1, 'verified_at': time.time(), 'state_sha256': digest(value),
-                   'proof': after, 'completion': 'MAINTENANCE_OK'}
-        fd, name = tempfile.mkstemp(prefix='.serving-', dir=guard.directory())
+    fd, name = tempfile.mkstemp(prefix='.serving-', dir=guard.directory())
+    try:
+        with os.fdopen(fd, 'w') as f:
+            json.dump(receipt, f, sort_keys=True); f.flush(); os.fsync(f.fileno())
+        os.replace(name, guard.directory() / 'serving.json')
+        d = os.open(guard.directory(), os.O_RDONLY)
         try:
-            with os.fdopen(fd, 'w') as f:
-                json.dump(receipt, f, sort_keys=True); f.flush(); os.fsync(f.fileno())
-            os.replace(name, guard.directory() / 'serving.json')
-            d = os.open(guard.directory(), os.O_RDONLY)
-            try:
-                os.fsync(d)
-            finally:
-                os.close(d)
+            os.fsync(d)
         finally:
-            if os.path.exists(name):
-                os.unlink(name)
-        require_admission()
-        return receipt
+            os.close(d)
+    finally:
+        if os.path.exists(name):
+            os.unlink(name)
 
 
-def require_admission():
-    value = active_state()
+def verified_receipt(value, proof, action, previous=None):
+    from agent.executor_attestation import request
+    evidence = request(proof, digest(value), action, previous)
+    if observe(value['model']) != proof or active_state() != value:
+        refuse('runtime/state changed during exact-process verification')
+    return {'version': 2, 'verified_at': evidence['completed_at'],
+            'state_sha256': digest(value), 'proof': proof, 'attestation': evidence}
+
+
+def certify():
+    from hermes_cli.maintenance_inference import locked
+    with locked():
+        # Explicit certification invalidates prior authority even on failure.
+        save_receipt({'version': 0, 'invalidated': True})
+        try:
+            value = active_state()
+            receipt = verified_receipt(value, observe(value['model']), 'certify')
+            save_receipt(receipt)
+            require_admission()
+            return receipt
+        except Exception:
+            save_receipt({'version': 0, 'invalidated': True})
+            raise
+
+
+def existing_receipt(value, *, allow_expired=False):
     receipt = private_json(guard.directory() / 'serving.json')
     try:
-        if (receipt['version'] != 1 or receipt['completion'] != 'MAINTENANCE_OK'
-                or not 0 <= time.time() - receipt['verified_at'] <= MAX_AGE
-                or receipt['state_sha256'] != digest(value)):
+        age = time.time() - receipt['verified_at']
+        if (receipt['version'] != 2 or age < 0
+                or (not allow_expired and age > MAX_AGE)
+                or receipt['state_sha256'] != digest(value)
+                or receipt['verified_at'] != receipt['attestation']['completed_at']):
             refuse('receipt stale/unverified or isolation state changed; certify again')
         if observe(value['model']) != receipt['proof']:
             refuse('executor/runtime/profile/deployment changed; certify again')
     except (KeyError, TypeError, ValueError):
         refuse('malformed admission receipt')
     return receipt
+
+
+def require_admission():
+    value = active_state()
+    receipt = existing_receipt(value)
+    # A private JSON file, argv, or separately completed probe is not authority.
+    if verified_receipt(value, receipt['proof'], 'check') != receipt:
+        refuse('receipt does not match completion held by exact executor runtime')
+    return receipt
+
+
+def renew():
+    """Renew only unchanged, explicitly certified authority; never reopen/extend control.
+
+    Stale receipts may be replaced by a NEW authenticated exact-PID completion,
+    not by refreshing the timestamp. Any invalidation requires explicit certify.
+    """
+    from hermes_cli.maintenance_inference import locked
+    with locked():
+        try:
+            value = active_state()
+            old = existing_receipt(value, allow_expired=True)
+            receipt = verified_receipt(value, old['proof'], 'renew', old['attestation'])
+            save_receipt(receipt)
+            require_admission()
+            return receipt
+        except Exception:
+            save_receipt({'version': 0, 'invalidated': True})
+            raise

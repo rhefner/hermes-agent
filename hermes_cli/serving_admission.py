@@ -11,7 +11,7 @@ from agent import serving_admission as admission
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('check', 'certify', 'status', 'enroll', 'close'))
+    parser.add_argument('action', choices=('check', 'renew', 'certify', 'status', 'enroll', 'close'))
     parser.add_argument('--owner')
     parser.add_argument('--executor-pid', type=int)
     parser.add_argument('--seconds', type=int, default=3600)
@@ -34,8 +34,8 @@ def main():
             receipt = admission.certify()
             print(json.dumps({'status': 'SERVING_ADMISSION_VERIFIED', 'verified_at': receipt['verified_at'],
                               'expires_at': receipt['verified_at'] + admission.MAX_AGE}))
-        elif args.action == 'check':
-            receipt = admission.require_admission()
+        elif args.action in ('check', 'renew'):
+            receipt = admission.renew() if args.action == 'renew' else admission.require_admission()
             control = receipt['proof']['control']
             result = {'status': 'SERVING_ADMISSION_OK', 'owner': control['owner'],
                       'expires_at': min(control['expires'], receipt['verified_at'] + admission.MAX_AGE)}
