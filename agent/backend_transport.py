@@ -6,7 +6,6 @@ the descriptor, so an outstanding stream can never keep pinning its backend
 lock after the client is gone. Stream close is idempotent.
 """
 import os
-import weakref
 
 import httpx
 
@@ -24,8 +23,9 @@ def _lock_handles(begin):
 
 
 class ResponseStream(httpx.SyncByteStream):
-    def __init__(self, stream, fds):
+    def __init__(self, stream, fds, on_close=None):
         self.stream, self.fds = stream, list(fds)
+        self.on_close = on_close
 
     def __iter__(self):
         yield from self.stream
@@ -37,11 +37,14 @@ class ResponseStream(httpx.SyncByteStream):
             fds, self.fds = self.fds, []
             for fd in fds:
                 os.close(fd)
+            if self.on_close is not None:
+                self.on_close(self)
 
 
 class AsyncResponseStream(httpx.AsyncByteStream):
-    def __init__(self, stream, fds):
+    def __init__(self, stream, fds, on_close=None):
         self.stream, self.fds = stream, list(fds)
+        self.on_close = on_close
 
     async def __aiter__(self):
         async for chunk in self.stream:
@@ -54,13 +57,15 @@ class AsyncResponseStream(httpx.AsyncByteStream):
             fds, self.fds = self.fds, []
             for fd in fds:
                 os.close(fd)
+            if self.on_close is not None:
+                self.on_close(self)
 
 
 class BackendTransport(httpx.BaseTransport):
     def __init__(self, inner):
         self.inner = inner
-        # Weak: a closed-and-dropped response leaves nothing to sweep.
-        self._outstanding = weakref.WeakSet()
+        # Own unclosed streams even if callers discard their response.
+        self._outstanding = set()
 
     @property
     def _pool(self):
@@ -76,7 +81,7 @@ class BackendTransport(httpx.BaseTransport):
             for fd in fds:
                 os.close(fd)
             raise
-        stream = ResponseStream(response.stream, fds)
+        stream = ResponseStream(response.stream, fds, self._outstanding.discard)
         self._outstanding.add(stream)
         response.stream = stream
         return response
@@ -90,7 +95,7 @@ class BackendTransport(httpx.BaseTransport):
 class AsyncBackendTransport(httpx.AsyncBaseTransport):
     def __init__(self, inner):
         self.inner = inner
-        self._outstanding = weakref.WeakSet()
+        self._outstanding = set()
 
     @property
     def _pool(self):
@@ -104,7 +109,7 @@ class AsyncBackendTransport(httpx.AsyncBaseTransport):
             for fd in fds:
                 os.close(fd)
             raise
-        stream = AsyncResponseStream(response.stream, fds)
+        stream = AsyncResponseStream(response.stream, fds, self._outstanding.discard)
         self._outstanding.add(stream)
         response.stream = stream
         return response
