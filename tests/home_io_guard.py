@@ -11,6 +11,18 @@ import sqlite3
 import sys
 import threading
 
+def _worktree_payload_manifest_prefixes() -> set[Path]:
+    # A linked worktree's sealed-payload manifest is probed one level above the
+    # checkout (pm/environments.payload_venv/store_root: root.parent/manifest.json).
+    # Like the git-metadata exemption below it is repo plumbing of the worktree
+    # arrangement, never Hermes state; without it the first run_agent import from
+    # a worktree under the real home trips the guard on a bare existence stat.
+    checkout = Path(__file__).resolve().parent.parent
+    if checkout.parent.name != ".worktrees":
+        return set()
+    return {checkout.parent / "manifest.json"}
+
+
 def _worktree_git_prefixes() -> set[Path]:
     # Git metadata of a linked worktree lives in the main checkout's .git; see
     # the comment at the exemption site below.
@@ -49,7 +61,7 @@ _INTERPRETER_PREFIXES = tuple({
     # test run from a worktree of a default install trips on the first
     # run_agent import, because the checkout's parent is the real home.
     Path(__file__).resolve().parent.parent,
-} | _worktree_git_prefixes())
+} | _worktree_git_prefixes() | _worktree_payload_manifest_prefixes())
 # The same prefixes as plain strings for the check() fast path. PurePath comparison folds case on
 # Windows; ``os.path.normcase`` (identity on POSIX) reproduces that for string compares. Prefixes
 # resolve once at import, as before: they are fixed for the process lifetime.
