@@ -25,6 +25,20 @@ WRAPPER = re.compile(r'(?:glm53-(?:mia-ablit-cutover\.py|tf-cutover-v1\.7\.1\.sh
                      r'spark-model-surgery-routing\.py)', re.I)
 
 
+def _git_add_scan_view(normalized):
+    # A standalone `git add` whose arguments are plain path operands stages
+    # files without executing anything: interior path names must not
+    # fabricate the conjunction. Anything richer (command substitution,
+    # redirects, compound junctions inside the argument run) keeps the
+    # conservative whole-command scan; only flag tokens survive as scan
+    # evidence because path operands are data, not execution proof.
+    match = re.fullmatch(r'git\s+add\s+(\S.*?)\s*', normalized)
+    if not match or re.search(r'[$`"&;|<>()]', match.group(1)):
+        return normalized
+    return 'git add ' + ' '.join(w for w in match.group(1).split()
+                                  if w.startswith('-'))
+
+
 def recognizable_mutation(text):
     if not isinstance(text, str):
         return False
@@ -39,7 +53,11 @@ def recognizable_mutation(text):
     if WRAPPER.search(combined):
         # Legacy paths are intentionally conservative; status via new CLI is read-only.
         return True
-    if TARGET.search(combined) and MUTATE.search(combined) and EXEC.search(combined):
+    # Shell newlines are command separators; shlex normalization erases them.
+    # Never grant the operand-only exception after losing that raw structure.
+    stripped = normalized if '\n' in text or '\r' in text else _git_add_scan_view(normalized)
+    scan = stripped if stripped is not normalized else combined
+    if TARGET.search(scan) and MUTATE.search(scan) and EXEC.search(scan):
         return True
     # Aggregate daemon/all-container mutations have implicit serving targets.
     return bool(re.search(r'\b(?:docker|podman)\b.*\b(?:stop|kill|rm|restart|prune)\b.*(?:\$|--all|\s-a\b)', normalized)
