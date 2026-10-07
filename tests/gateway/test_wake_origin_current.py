@@ -9,7 +9,7 @@ import pytest
 
 from tests.gateway.test_queued_wake_outcomes import lane, drain
 from gateway.run_turn_runner import TurnRunner
-from gateway.wake import deliver_wake
+from gateway.wake import WakeNotAccepted, deliver_wake
 from gateway.wake_receipts import ReceiptStore, boundary, DEFAULTS
 from gateway.wake_monitor import reconcile
 from gateway.config import Platform
@@ -80,8 +80,16 @@ async def test_changed_origin_never_runs_or_sends(lane, monkeypatch, change, tmp
         source = dataclasses.replace(source, thread_id='other')
     else:
         (tmp_path / 'config.yaml').write_text('gateway:\n  wake_outcomes:\n    enabled: true\n  profile_routes:\n    - platform: telegram\n      chat_id: "42"\n      profile: foreign\n')
-    await deliver_wake(adapter, text='must not run', source=source, session_id=sid,
-                       identity=('kanban', 'board', 'task', change))
+    # Unadmitted wakes raise only when the origin is unresolvable (retryable,
+    # monitor-notified); a closed/changed origin is a verified-permanent
+    # quiet-terminal, per the pre-existing contracts below.
+    if change == 'unknown':
+        with pytest.raises(WakeNotAccepted):
+            await deliver_wake(adapter, text='must not run', source=source, session_id=sid,
+                               identity=('kanban', 'board', 'task', change))
+    else:
+        await deliver_wake(adapter, text='must not run', source=source, session_id=sid,
+                           identity=('kanban', 'board', 'task', change))
     await drain(adapter)
     assert not calls
     adapter._bot.send_message.assert_not_called()
@@ -90,7 +98,12 @@ async def test_changed_origin_never_runs_or_sends(lane, monkeypatch, change, tmp
         sent.append(args)
         return {'success': True}
     await reconcile(store, DEFAULTS, notice)
-    assert not sent
+    if change == 'unknown':
+        # The unresolvable-origin receipt gets the single bounded operator
+        # notice instead of being stranded forever.
+        assert len(sent) == 1
+    else:
+        assert not sent
 
 
 @pytest.mark.asyncio
@@ -103,6 +116,8 @@ async def test_duplicate_identity_cannot_rebind_after_reset(lane, monkeypatch):
     calls = adapter._bot.send_message.call_count
     other = dataclasses.replace(source, thread_id='different')
     other_entry = runner.session_store.get_or_create_session(other)
+    # The repeated identity is bound to the first route: the rebind is a quiet
+    # no-run (pre-existing contract), never a second agent turn.
     await deliver_wake(adapter, text='rebound duplicate', source=other, session_id=other_entry.session_id,
                        identity=('test', 'one'))
     await drain(adapter)

@@ -11,6 +11,25 @@ import sqlite3
 import sys
 import threading
 
+def _worktree_git_prefixes() -> set[Path]:
+    # Git metadata of a linked worktree lives in the main checkout's .git; see
+    # the comment at the exemption site below.
+    checkout = Path(__file__).resolve().parent.parent
+    dot_git = checkout / ".git"
+    try:
+        if not dot_git.is_file():
+            return set()
+        head = dot_git.read_text(encoding="utf-8").strip()
+        if not head.startswith("gitdir:"):
+            return set()
+        gitdir = Path(head.split(":", 1)[1].strip())
+        if not gitdir.is_absolute():
+            gitdir = checkout / gitdir
+        return {gitdir.resolve()}
+    except OSError:
+        return set()
+
+
 _INTERPRETER_PREFIXES = tuple({
     Path(p).resolve() for p in (sys.prefix, sys.base_prefix, sys.exec_prefix, sys.base_exec_prefix)
 } | {
@@ -23,8 +42,14 @@ _INTERPRETER_PREFIXES = tuple({
     # INSTALL_DIR=$HERMES_HOME/hermes-agent). Reading test data, sources for tracebacks, or the
     # checkout's own .venv is not Hermes state; without this every run from a default install
     # trips on its first traceback.
+    # A linked worktree's git metadata lives in the MAIN checkout's .git (the
+    # git common dir), outside the checkout dir itself. Probing it (run_agent's
+    # import-time interrupted-pull marker check) is repo plumbing, never Hermes
+    # state — same argument as the checkout exemption above; without this every
+    # test run from a worktree of a default install trips on the first
+    # run_agent import, because the checkout's parent is the real home.
     Path(__file__).resolve().parent.parent,
-})
+} | _worktree_git_prefixes())
 # The same prefixes as plain strings for the check() fast path. PurePath comparison folds case on
 # Windows; ``os.path.normcase`` (identity on POSIX) reproduces that for string compares. Prefixes
 # resolve once at import, as before: they are fixed for the process lifetime.
