@@ -291,6 +291,14 @@ def build_keepalive_http_client(base_url: str = "", *, async_mode: bool = False,
         transport_cls = httpx.AsyncHTTPTransport if async_mode else httpx.HTTPTransport
         client_cls = httpx.AsyncClient if async_mode else httpx.Client
         from agent.maintenance_inference import check_http_request, check_async_http_request
+        if proxy is not None:
+            from agent.backend_isolation import configuration
+            proxied = configuration()
+            if proxied is not None and proxied['phase'] != 'normal':
+                from agent.maintenance_inference import MaintenanceIsolationError
+                raise MaintenanceIsolationError('Proxy inference cannot provide backend response tracking')
+        # Model-aware hooks recheck cached clients and redirects; the wrapped
+        # transport additionally holds backend locks for response lifetime.
         hooks = {"request": [check_async_http_request if async_mode else check_http_request]}
         mounts = None
         if proxy is None:
@@ -302,12 +310,13 @@ def build_keepalive_http_client(base_url: str = "", *, async_mode: bool = False,
                 max_keepalive_connections=50, max_connections=1000, keepalive_expiry=20.0,
             )
 
-            def _build_direct():
+            def _build_direct() -> Any:
                 transport = transport_cls(verify=verify, limits=direct_limits)
                 # Async transports race natively (anyio happy_eyeballs_delay=0.25).
                 if happy_eyeballs:
                     _enable_happy_eyeballs(transport)
-                return transport
+                from agent.backend_transport import BackendTransport, AsyncBackendTransport
+                return (AsyncBackendTransport if async_mode else BackendTransport)(transport)
 
             if async_mode:
                 mounts = {"http://": _build_direct(), "https://": _build_direct()}
@@ -323,6 +332,10 @@ def build_keepalive_http_client(base_url: str = "", *, async_mode: bool = False,
                 return client_cls(limits=limits, timeout=timeout, transport=mounts["https://"], mounts=mounts, event_hooks=hooks)
         return client_cls(limits=limits, timeout=timeout, proxy=proxy, mounts=mounts or None, verify=verify, event_hooks=hooks)
     except Exception:
+        from agent.backend_isolation import configuration
+        if configuration() is not None:
+            from agent.maintenance_inference import MaintenanceIsolationError
+            raise MaintenanceIsolationError('Backend tracking transport unavailable; refusing untracked SDK fallback') from None
         return None
 
 

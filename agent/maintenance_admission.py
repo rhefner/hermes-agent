@@ -131,6 +131,10 @@ class Reservation:
 
 
 def reserve(kind):
+    from agent.backend_isolation import configuration
+    if configuration() is not None:
+        # Retain legacy work/enrollment as history, never forge its completion.
+        return None
     if not _enabled():
         return None
     root = directory()

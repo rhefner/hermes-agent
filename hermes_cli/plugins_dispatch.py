@@ -215,7 +215,7 @@ class PluginDispatchMixin:
         closed with a block directive, others skip. ``_HOOK_CALLER_THREAD_HOOKS`` always run on the
         caller thread. ``pre_llm_call`` may return ``{"context": "..."}`` (or a str) to inject.
         """
-        from agent.maintenance_inference import state
+        from agent.maintenance_inference import legacy_state as state
         if state():
             # Plugin hooks may invoke arbitrary local inference outside core clients.
             # Policy hooks must block, not silently lose their veto.

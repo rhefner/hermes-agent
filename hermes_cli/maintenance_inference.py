@@ -106,6 +106,9 @@ def probe_profile(home, model):
 
 
 def enter(model, *, drained):
+    from agent.backend_isolation import configuration
+    if configuration() is not None:
+        raise guard.MaintenanceIsolationError('Use backend-scoped entry after migration')
     if not drained:
         raise guard.MaintenanceIsolationError("Drain existing inference and load this runtime in ALL processes first; then pass --drained. This command never restarts services.")
     if not model or not model.strip():
@@ -133,6 +136,10 @@ def enter(model, *, drained):
 
 
 def exit_maintenance(approval):
+    from agent.backend_isolation import configuration
+    if configuration() is not None:
+        from hermes_cli.backend_isolation import release
+        return release(approval)
     if not approval or not approval.strip():
         raise guard.MaintenanceIsolationError("Explicit case-specific Hef post-QA approval is required; no automatic restoration")
     with locked():

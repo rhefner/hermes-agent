@@ -176,7 +176,8 @@ def _openai_http_client_kwargs(base_url: Optional[str], *, async_mode: bool = Fa
                 "reinstall the Desktop app) to resync the runtime.")
         client = None
     from agent.maintenance_inference import state, MaintenanceIsolationError
-    if client is None and state():
+    maintenance = state(include_normal=True)
+    if client is None and maintenance and (maintenance['version'] == 2 or maintenance['phase'] != 'normal'):
         raise MaintenanceIsolationError("Guarded HTTP transport unavailable; refusing unguarded SDK fallback")
     return {"http_client": client} if client is not None else {}
 
@@ -5751,7 +5752,7 @@ def resolve_vision_provider_client(
     Direct endpoint overrides beat provider selection; explicit providers may force
     experimental backends; auto mode only tries backends known to work.
     """
-    from agent.maintenance_inference import state
+    from agent.maintenance_inference import legacy_state as state
     maintenance = state()
     if maintenance:
         client, final_model = resolve_provider_client(maintenance["provider"], maintenance["model"],
@@ -6245,7 +6246,7 @@ def _resolve_task_provider_model(
     but a first-class provider + base_url keeps the provider identity so its auth/transport
     shaping still applies. api_mode is "chat_completions", "codex_responses", or None (auto).
     """
-    from agent.maintenance_inference import auxiliary_route, state
+    from agent.maintenance_inference import auxiliary_route, legacy_state as state
     if state():
         return auxiliary_route(provider, model, base_url, api_key, None)
     cfg_provider = cfg_model = cfg_base_url = cfg_api_key = resolved_api_mode = None
