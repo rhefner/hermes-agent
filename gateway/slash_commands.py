@@ -393,6 +393,18 @@ class GatewaySlashCommandsMixin(
         delivery_metadata = self._reply_metadata(event) or None
         if isinstance(delivery_metadata, dict) and chat_type:
             delivery_metadata.setdefault("chat_type", chat_type)
+        # Wake origin: without it the completion wake is discarded as
+        # unknown-origin inside wake_receipts.admit (receipt stranded
+        # 'uncertain'). Peek only — never create a session as a side effect of
+        # subscribing; a chat with no session yet has no origin to name.
+        try:
+            from gateway.session import build_session_key as _build_session_key
+            _origin = await self.async_session_store.peek_session_id(_build_session_key(source))
+        except Exception:
+            _origin = None
+        if _origin:
+            delivery_metadata = dict(delivery_metadata or {})
+            delivery_metadata.setdefault("origin_session_id", _origin)
         if not (platform_str and chat_id):
             return False
 

@@ -4221,6 +4221,11 @@ class GatewayRunner(
             scope_id=str(getattr(context.source, "scope_id", "") or ""),
             parent_chat_id=str(getattr(context.source, "parent_chat_id", "") or ""),
             session_key=context.session_key,
+            # The live session id, not only the agent-init rebind: without it, a
+            # kanban_create on a turn whose agent was served from cache (no
+            # init → no _publish_session_id) stores no wake origin and the
+            # completion wake is silently discarded as unknown-origin.
+            session_id=str(context.session_id or ""),
             message_id=str(context.source.message_id) if context.source.message_id else "",
             profile=getattr(context.source, "profile", "") or "",
             async_delivery=_async_delivery,

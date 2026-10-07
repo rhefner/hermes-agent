@@ -31,10 +31,14 @@ async def reconcile(store, cfg, send):
         if row["state"] not in {"failed", "uncertain"} and now < deadline:
             continue
         verdict = boundary(store, row)
-        if verdict is not True:
-            if verdict is False:
-                store.transition(row["id"], "closed_boundary")
+        if verdict is False:
+            store.transition(row["id"], "closed_boundary")
             continue
+        # verdict True: verified origin, claim below. verdict None: unresolvable
+        # origin (e.g. a subscription created without origin_session_id). The
+        # row is already past its deadline or failed/uncertain, and there is
+        # nothing left to verify, so it falls through to the bounded operator
+        # notice instead of being skipped forever.
         with store.connect() as db:
             # Reserve under the SQLite writer lock, but commit an attempt only
             # after the final ownership check. Unknown ownership rolls back the
@@ -50,8 +54,9 @@ async def reconcile(store, cfg, send):
                 continue
             verdict = boundary(store, row)
             if verdict is None:
-                db.rollback()
-                continue
+                # Unresolvable even now: no ownership proof is possible, but the
+                # bounded operator notice below is exactly the strand breaker.
+                pass
             if verdict is False:
                 db.execute("UPDATE receipts SET state='closed_boundary',updated=?,activity=?,"
                            "notice='closed_boundary',notice_at=?,notice_attempts=? WHERE id=?",
