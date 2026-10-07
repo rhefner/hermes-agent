@@ -35,7 +35,7 @@ def directory() -> Path:
     return native.with_name("hermes" if os.name == "nt" else ".hermes") / "maintenance-inference"
 
 
-def state():
+def state(*, include_normal=False):
     root = directory()
     try:
         st = root.lstat()
@@ -51,10 +51,14 @@ def state():
         if not stat.S_ISREG(fs.st_mode) or fs.st_uid != os.getuid() or fs.st_mode & 0o077:
             raise ValueError()
         value = json.loads(path.read_text())
+        if value.get('version') == 2:
+            from agent.backend_isolation import validate
+            validate(value)
+            return value if include_normal or value['phase'] != 'normal' else None
         if value.get("version") != 1 or value.get("phase") not in {"normal", "verifying", "active"}:
             raise ValueError()
         if value["phase"] == "normal":
-            return None
+            return value if include_normal else None
         if (value.get("provider") != "openai-codex" or not isinstance(value.get("model"), str)
                 or not value["model"].strip() or value.get("base_url") != CLOUD_BASE
                 or not isinstance(value.get("verified_profiles"), list)):
@@ -79,6 +83,9 @@ def require_route(provider, model, base_url=None, api_mode=None, *, resolved=Fal
     s = state()
     if s is None:
         return
+    if s['version'] == 2:
+        from agent.backend_isolation import require_route as require_backend
+        return require_backend(s, provider, model, base_url, api_mode, resolved=resolved)
     if (provider != s["provider"] or model != s["model"]
             or (base_url and not cloud_url(base_url))
             or (resolved and not cloud_url(base_url))
@@ -114,6 +121,10 @@ def check_http_request(request):
     s = state()
     if s is None:
         return
+    if s['version'] == 2:
+        from agent.backend_isolation import require_route as require_backend, request_model
+        require_backend(s, None, request_model(request), str(request.url), None, resolved=True)
+        return
     if not cloud_url(request.url) or any(os.environ.get(k) for k in (
             "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy")):
         raise MaintenanceIsolationError(NOTICE)
@@ -130,8 +141,14 @@ async def check_async_http_request(request):
     check_http_request(request)
 
 
+def legacy_state():
+    """Only the pre-migration global contract uses blanket dispatch overrides."""
+    value = state()
+    return value if value and value['version'] == 1 else None
+
+
 def auxiliary_route(provider, model, base_url, api_key, api_mode):
-    s = state()
+    s = legacy_state()
     if s is None:
         return provider, model, base_url, api_key, api_mode
     # No carryover of local URL/key/transport. Resolve authentication in the
@@ -140,7 +157,7 @@ def auxiliary_route(provider, model, base_url, api_key, api_mode):
 
 
 def dispatch_route(profile_home):
-    s = state()
+    s = legacy_state()
     if s is None:
         return None
     if s["phase"] != "active" or not profile_home or str(Path(profile_home).resolve()) not in s["verified_profiles"]:

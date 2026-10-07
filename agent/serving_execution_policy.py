@@ -48,4 +48,16 @@ def recognizable_mutation(text):
 
 def check(text):
     if recognizable_mutation(text):
-        serving_admission.require_admission()
+        from agent.backend_isolation import configuration, require_mutation
+        value = configuration()
+        if value is None:
+            serving_admission.require_admission()
+            return
+        hosts = set(re.findall(r'spark[-_ ]?([123])', text, re.I))
+        targets = set()
+        if hosts & {'1', '2'} or re.search(r'glm53-(?:mia-ablit-cutover|tf-cutover)', text):
+            targets.add('spark-pair')
+        if '3' in hosts:
+            targets.add('spark-3')
+        # Ambiguous aggregate mutations need every inventoried backend excluded.
+        require_mutation(sorted(targets or value['backends']))

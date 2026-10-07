@@ -210,6 +210,9 @@ def existing_receipt(value, *, allow_expired=False):
 
 
 def require_admission():
+    from agent.backend_isolation import configuration
+    if configuration() is not None:
+        refuse('legacy unscoped serving checks are retired; supply explicit backend targets')
     value = active_state()
     receipt = existing_receipt(value)
     # A private JSON file, argv, or separately completed probe is not authority.
