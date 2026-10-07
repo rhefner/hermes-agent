@@ -34,11 +34,11 @@ async def reconcile(store, cfg, send):
         if verdict is False:
             store.transition(row["id"], "closed_boundary")
             continue
-        # verdict True: verified origin, claim below. verdict None: unresolvable
-        # origin (e.g. a subscription created without origin_session_id). The
-        # row is already past its deadline or failed/uncertain, and there is
-        # nothing left to verify, so it falls through to the bounded operator
-        # notice instead of being skipped forever.
+        if verdict is None:
+            # Unknown ownership is not permission to message that route. Keep
+            # the receipt retryable and expose the failure to local operators.
+            results.append({"receipt": row["id"], "notice": "origin_unverified"})
+            continue
         with store.connect() as db:
             # Reserve under the SQLite writer lock, but commit an attempt only
             # after the final ownership check. Unknown ownership rolls back the
@@ -54,9 +54,9 @@ async def reconcile(store, cfg, send):
                 continue
             verdict = boundary(store, row)
             if verdict is None:
-                # Unresolvable even now: no ownership proof is possible, but the
-                # bounded operator notice below is exactly the strand breaker.
-                pass
+                db.rollback()
+                results.append({"receipt": row["id"], "notice": "origin_unverified"})
+                continue
             if verdict is False:
                 db.execute("UPDATE receipts SET state='closed_boundary',updated=?,activity=?,"
                            "notice='closed_boundary',notice_at=?,notice_attempts=? WHERE id=?",

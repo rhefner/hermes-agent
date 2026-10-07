@@ -398,6 +398,8 @@ async def test_unknown_origin_cannot_starve_later_failure(route):
         db.execute("UPDATE receipts SET updated=0 WHERE id=?", (missing.key,))
     send = AsyncMock(return_value={"success": True})
     cfg = {**DEFAULTS, "batch_size": 1}
-    assert await reconcile(store, cfg, send) == []
+    assert await reconcile(store, cfg, send) == [
+        {'receipt': missing.key, 'notice': 'origin_unverified'}]
+    send.assert_not_awaited()
     assert await reconcile(store, cfg, send) == [{"receipt": failed.key, "notice": "sent"}]
     assert send.call_count == 1

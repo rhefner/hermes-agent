@@ -125,7 +125,7 @@ def test_deliver_wake_retries_429_then_succeeds(monkeypatch):
     assert calls["n"] == 2
 
 
-def test_persist_delegation_delivery_appends_delivery_row(tmp_path):
+def test_persist_delegation_delivery_appends_delivery_row(tmp_path, monkeypatch):
     """#85957: the delegation completion lands in the session transcript as a
     display_kind=async_delegation_complete delivery row (real SessionDB), and
     NO self-post / agent turn is involved."""
@@ -133,6 +133,12 @@ def test_persist_delegation_delivery_appends_delivery_row(tmp_path):
 
     from gateway.wake import persist_delegation_delivery
     from hermes_state import SessionDB
+
+    # The pinned test interpreter is already provisioned. Dependency activation
+    # is not part of transcript delivery; isolate its lazy bootstrap side effect
+    # rather than granting tests access to the real install's parent directory.
+    from pm import environments
+    monkeypatch.setattr(environments, 'activate_dependencies', lambda root: None)
 
     db = SessionDB(db_path=Path(tmp_path) / "state.db")
     sid = "raw-hq-sid"

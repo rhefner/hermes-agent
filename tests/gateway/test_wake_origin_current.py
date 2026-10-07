@@ -80,10 +80,11 @@ async def test_changed_origin_never_runs_or_sends(lane, monkeypatch, change, tmp
         source = dataclasses.replace(source, thread_id='other')
     else:
         (tmp_path / 'config.yaml').write_text('gateway:\n  wake_outcomes:\n    enabled: true\n  profile_routes:\n    - platform: telegram\n      chat_id: "42"\n      profile: foreign\n')
-    # Unadmitted wakes raise only when the origin is unresolvable (retryable,
-    # monitor-notified); a closed/changed origin is a verified-permanent
-    # quiet-terminal, per the pre-existing contracts below.
-    if change == 'unknown':
+    # Unresolvable origins (never-recorded, or the route no longer resolves)
+    # raise: retryable, and the monitor emits the single bounded operator
+    # notice. A verified-permanent closed origin stays the quiet
+    # closed_boundary terminal, per the pre-existing contracts below.
+    if change in ('unknown', 'route'):
         with pytest.raises(WakeNotAccepted):
             await deliver_wake(adapter, text='must not run', source=source, session_id=sid,
                                identity=('kanban', 'board', 'task', change))
@@ -97,13 +98,10 @@ async def test_changed_origin_never_runs_or_sends(lane, monkeypatch, change, tmp
     async def notice(*args):
         sent.append(args)
         return {'success': True}
-    await reconcile(store, DEFAULTS, notice)
+    diagnostics = await reconcile(store, DEFAULTS, notice)
+    assert not sent  # Unknown ownership never authorizes conversational delivery.
     if change == 'unknown':
-        # The unresolvable-origin receipt gets the single bounded operator
-        # notice instead of being stranded forever.
-        assert len(sent) == 1
-    else:
-        assert not sent
+        assert any(item['notice'] == 'origin_unverified' for item in diagnostics)
 
 
 @pytest.mark.asyncio
