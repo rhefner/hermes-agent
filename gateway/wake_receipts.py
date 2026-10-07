@@ -290,10 +290,11 @@ async def admit(adapter, event, receipts):
     if not all(verdicts):
         for receipt, verdict in zip(receipts, verdicts):
             store.transition(receipt.key, "closed_boundary" if verdict is False else "uncertain")
-        if not any(verdict is False for verdict in verdicts) and all(not row["session_id"] for row in rows):
-            # No origin was ever recorded (e.g. a subscription created without
-            # origin_session_id): refusing loudly keeps the caller's rewind
-            # path engaged instead of a logged success.
+        if not any(verdict is False for verdict in verdicts):
+            # Unresolvable origin (no origin recorded, or the route no longer
+            # resolves): refusing loudly keeps the caller's rewind path engaged
+            # and the monitor's single bounded operator notice informed,
+            # instead of a logged success or a stranded receipt.
             raise WakeNotAccepted("wake origin unresolvable; admission refused")
         # Closed/False is verified-permanent: the existing quiet
         # closed_boundary terminal state and the monitor's bounded notice

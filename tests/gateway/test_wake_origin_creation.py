@@ -61,10 +61,12 @@ async def test_missing_origin_wake_raises_and_notice_is_bounded(lane):
         sent.append((route, text))
         return {'success': True}
 
-    await reconcile(store, DEFAULTS, notice)
-    assert len(sent) == 1  # exactly one bounded operator notice
-    await reconcile(store, DEFAULTS, notice)
-    assert len(sent) == 1  # notice budget spent; never a second
+    for _ in range(2):
+        diagnostics = await reconcile(store, DEFAULTS, notice)
+        assert diagnostics == [{'receipt': row['id'], 'notice': 'origin_unverified'}]
+        assert not sent
+    current, = store.rows()
+    assert current['notice_attempts'] == 0  # Preserve budget until ownership is known.
 
 
 @pytest.mark.asyncio
