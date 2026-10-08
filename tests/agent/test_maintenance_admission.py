@@ -171,8 +171,11 @@ def test_crashed_worker_debt_not_swept_as_zero(enrolled):
     code = '''import os,sys
 from pathlib import Path
 from agent import maintenance_admission as g
+from agent import maintenance_inference as isolation
 g.directory=lambda:Path(sys.argv[1])
-g.reserve('crash')
+# The fresh interpreter must not read the operator's live v2 enrollment.
+isolation.directory=lambda:Path(sys.argv[1]).parent / 'maintenance-inference'
+assert g.reserve('crash') is not None
 os._exit(0)
 '''
     result = subprocess.run([sys.executable, '-c', code, str(root)],
