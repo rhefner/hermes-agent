@@ -46,7 +46,7 @@ def _plain_git_diff(text):
     helper/config/output options and shell syntax retain conservative scanning.
     Operators should also use --no-ext-diff --no-textconv for inspection.
     """
-    if re.search(r'[\n\r$`;&|<>()\\\\]', text):
+    if re.search(r'[\n\r$`;&|<>()\\\\*?\[\]{}#]', text):
         return False
     try:
         words = shlex.split(text, comments=False)
