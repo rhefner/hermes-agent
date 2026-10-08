@@ -39,8 +39,37 @@ def _git_add_scan_view(normalized):
                                   if w.startswith('-'))
 
 
+def _plain_git_diff(text):
+    """Recognize only standalone diff with data operands, not shell execution.
+
+    This is an operational classifier, not Git's security sandbox. Explicit
+    helper/config/output options and shell syntax retain conservative scanning.
+    Operators should also use --no-ext-diff --no-textconv for inspection.
+    """
+    if re.search(r'[\n\r$`;&|<>()\\\\]', text):
+        return False
+    try:
+        words = shlex.split(text, comments=False)
+    except ValueError:
+        return False
+    if words[:2] != ['git', 'diff']:
+        return False
+    safe_flags = {'--no-ext-diff', '--no-textconv', '--stat', '--name-only',
+                  '--name-status', '--check', '--cached', '--staged', '--quiet',
+                  '--exit-code', '--no-color', '--color=never', '-p', '--patch'}
+    paths = False
+    for word in words[2:]:
+        if word == '--':
+            paths = True
+        elif not paths and word.startswith('-') and word not in safe_flags:
+            return False
+    return True
+
+
 def recognizable_mutation(text):
     if not isinstance(text, str):
+        return False
+    if _plain_git_diff(text):
         return False
     # Handle shell token splicing and Python argv-list punctuation, retaining raw
     # text too so quoted remote payloads and nested interpreter code remain visible.
