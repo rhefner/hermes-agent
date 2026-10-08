@@ -19,6 +19,8 @@ def test_plain_diff_operands(command):
     'git diff $(spark3-lane-switch secondary)',
     'git diff `spark3-lane-switch secondary`',
     f'git diff -- {PATH} > result',
+    f'git diff * -- {PATH}',
+    f'git diff -- {PATH} # comment',
     f'git diff --ext-diff -- {PATH}',
     f'git diff --textconv -- {PATH}',
     f'git diff --output={PATH}',
