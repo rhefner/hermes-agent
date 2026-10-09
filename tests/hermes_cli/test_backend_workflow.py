@@ -50,7 +50,7 @@ def test_status_is_read_only_even_before_fleet_directory_exists(cli):
     value = json.loads(result.stdout)
     assert value['guard'] is None
     assert value['workflow'] is None
-    assert value['execution_supported'] is False
+    assert value['execution_supported'] is True
     assert not root.exists()
 
 
@@ -82,11 +82,11 @@ def test_real_cli_plan_approval_and_status_do_not_claim_execution(enrolled_cli, 
     status = json.loads(result.stdout)
     assert status['workflow']['stage'] == 'planned'
     assert status['activity'] == 'blocked'
-    assert status['execution_supported'] is False
-    assert 'not implemented' in status['next_action']
+    assert status['execution_supported'] is True
+    assert 'preflight' in status['next_action']
     assert (root / 'state.json').read_bytes() == guard_before
     assert not (root.parent / 'accounting').exists()
-    # No implementation means no fake run, mutation, or acceptance result.
+    # Execution still requires an explicitly selected independent model.
     refused = run('run', created['id'])
     assert refused.returncode != 0
     assert (root / 'state.json').read_bytes() == guard_before

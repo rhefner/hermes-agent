@@ -4,6 +4,7 @@ from decimal import Decimal
 import fcntl
 import hashlib
 import json
+import math
 import os
 import re
 import stat
@@ -17,6 +18,11 @@ PLAN_FIELDS = {'adapter', 'backends', 'controller_revision', 'delta', 'preserve'
                'qa', 'budget_seconds', 'margin_seconds', 'tasks'}
 QA_CHECKS = {'direct', 'facade', 'unaffected', 'capacity', 'health', 'settings'}
 RECORD_FIELDS = {'version', 'id', 'plan', 'plan_digest', 'approval', 'stage'}
+STAGES = {'planned', 'preflight_ready', 'approved', 'isolated', 'applying',
+          'verifying', 'awaiting_release', 'released', 'reconciling', 'complete'}
+EXECUTION_FIELDS = {'model', 'preflight', 'guard_operation', 'executor', 'heartbeat',
+                    'pending', 'applied', 'qa', 'events', 'error', 'release',
+                    'post_release', 'reconciliation', 'deadline'}
 APPROVAL_FIELDS = {'reference', 'text', 'plan_digest', 'release_policy', 'qa_digest'}
 MAX_BYTES = 1024 * 1024
 # Preparation accepts only non-secret settings of the one supported adapter.
@@ -102,15 +108,110 @@ def _private_directory(root):
             and not info.st_mode & 0o077, 'Private maintenance operation directory required')
 
 
+def _timestamp(value):
+    return type(value) in (int, float) and math.isfinite(value) and value > 0
+
+
+def _validate_execution(value):
+    execution, stage = value['execution'], value['stage']
+    require(_timestamp(execution['heartbeat'])
+            and (execution['deadline'] is None or _timestamp(execution['deadline']))
+            and (execution['error'] is None or _text(execution['error'], 1024)),
+            'Invalid workflow progress metadata')
+    executor = execution['executor']
+    if executor is not None:
+        require(set(executor) == {'pid', 'start', 'boot'} and type(executor['pid']) is int
+                and executor['pid'] > 1 and _text(executor['start'], 128) and _text(executor['boot'], 128),
+                'Invalid recorded executor identity')
+    for field in ('preflight', 'applied'):
+        snapshot = execution[field]
+        if snapshot is not None:
+            require(isinstance(snapshot.get('identity'), dict) and bool(snapshot['identity'])
+                    and _timestamp(snapshot.get('credentials_expires_at'))
+                    and type(snapshot.get('already_applied')) is bool and snapshot.get('healthy') is True,
+                    'Invalid controller observation')
+            if field == 'preflight':
+                require(_timestamp(snapshot.get('checked_at')), 'Invalid preflight timestamp')
+    for index, event in enumerate(execution['events']):
+        require(isinstance(event, dict) and event.get('sequence') == index
+                and _text(event.get('step'), 128) and event.get('phase') in ('intent', 'done', 'evidence')
+                and _timestamp(event.get('at')) and _text(event.get('path'))
+                and isinstance(event.get('sha256'), str) and re.fullmatch('[a-f0-9]{64}', event['sha256']),
+                'Invalid workflow evidence event')
+    pending = execution['pending']
+    if pending is not None:
+        require(_text(pending.get('step'), 128) and pending.get('phase') == 'intent',
+                'Invalid unresolved workflow intent')
+    qa = execution['qa']
+    if qa is not None:
+        require(isinstance(qa.get('checks'), dict) and set(qa['checks']) == set(value['plan']['qa'])
+                and all(passed is True for passed in qa['checks'].values())
+                and qa.get('plan_digest') == value['plan_digest']
+                and qa.get('qa_digest') == digest(value['plan']['qa'])
+                and qa.get('guard_operation') == execution['guard_operation']
+                and execution['applied'] is not None
+                and qa.get('identity') == execution['applied']['identity']
+                and _timestamp(qa.get('checked_at')) and isinstance(qa.get('evidence'), dict)
+                and _text(qa['evidence'].get('path'))
+                and isinstance(qa['evidence'].get('sha256'), str)
+                and re.fullmatch('[a-f0-9]{64}', qa['evidence']['sha256']),
+                'Invalid or mismatched workflow QA receipt')
+    release = execution['release']
+    if release is not None:
+        require(_text(release.get('reference'), 512) and _text(release.get('approval'))
+                and release.get('plan_digest') == value['plan_digest']
+                and release.get('qa_digest') == digest(value['plan']['qa'])
+                and release.get('guard_operation') == execution['guard_operation'] and qa is not None,
+                'Invalid workflow release approval')
+    if stage in ('planned', 'preflight_ready', 'approved'):
+        require(execution['guard_operation'] is None and executor is None,
+                'Preparation stage cannot own a maintenance executor')
+    if stage in ('isolated', 'applying', 'verifying', 'awaiting_release', 'released', 'reconciling', 'complete'):
+        require(execution['guard_operation'] is not None and executor is not None,
+                'Maintenance stage lacks its guard operation and executor')
+    if stage in ('verifying', 'awaiting_release', 'released', 'reconciling', 'complete'):
+        require(execution['applied'] is not None and execution['applied']['already_applied'],
+                'Maintenance stage lacks proven applied settings')
+    if stage in ('awaiting_release', 'released', 'reconciling', 'complete'):
+        require(qa is not None, 'Maintenance stage lacks QA evidence')
+    if stage in ('released', 'reconciling', 'complete'):
+        require(release is not None, 'Released stage lacks case-specific approval')
+    if stage in ('reconciling', 'complete'):
+        require(execution['post_release'] == {'primary': True, 'secondary': True}
+                and pending is None, 'Completed serving workflow lacks normal-route verification')
+    if stage == 'complete':
+        reconciliation = execution['reconciliation']
+        require(reconciliation is not None and reconciliation.get('status') == 'complete'
+                and reconciliation.get('completed') == value['plan']['tasks'],
+                'Completed workflow lacks task reconciliation')
+
+
 def _validate_record(value, operation):
-    require(isinstance(value, dict) and set(value) == RECORD_FIELDS,
-            'Invalid maintenance operation record')
+    require(isinstance(value, dict) and RECORD_FIELDS <= set(value)
+            and set(value) <= RECORD_FIELDS | {'execution'}, 'Invalid maintenance operation record')
     require(type(value['version']) is int and value['version'] == 1
-            and value['id'] == operation and value['stage'] == 'planned',
-            'Unsupported maintenance preparation record')
+            and value['id'] == operation and value['stage'] in STAGES,
+            'Unsupported maintenance operation record')
     validate_plan(value['plan'])
+    execution = value.get('execution')
+    if execution is None:
+        require(value['stage'] == 'planned', 'Missing workflow execution record')
+    else:
+        require(isinstance(execution, dict) and set(execution) == EXECUTION_FIELDS,
+                'Invalid workflow execution record')
+        require(_text(execution['model'], 128) and isinstance(execution['events'], list)
+                and len(execution['events']) <= 4096, 'Invalid workflow execution metadata')
+        if execution['guard_operation'] is not None:
+            _identifier(execution['guard_operation'])
+        for field in ('preflight', 'executor', 'pending', 'applied', 'qa', 'release',
+                      'post_release', 'reconciliation'):
+            require(execution[field] is None or isinstance(execution[field], dict),
+                    'Invalid workflow evidence shape')
+        _validate_execution(value)
     require(value['plan_digest'] == digest(value['plan']), 'Maintenance plan digest mismatch')
     approval = value['approval']
+    if value['stage'] not in ('planned', 'preflight_ready'):
+        require(approval is not None, 'Execution stage lacks case-specific plan approval')
     if approval is not None:
         require(isinstance(approval, dict) and set(approval) == APPROVAL_FIELDS,
                 'Invalid maintenance approval')
@@ -158,16 +259,61 @@ def operation_lock(operation):
         yield
 
 
-def _write(value):
-    _validate_record(value, value['id'])
-    root = directory()
+def read_heartbeat(operation):
+    operation = _identifier(operation)
+    try:
+        fd = os.open(directory() / (operation + '.heartbeat.json'), os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return None
+    try:
+        with os.fdopen(fd, 'rb') as f:
+            info = os.fstat(f.fileno())
+            require(stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid()
+                    and not info.st_mode & 0o077, 'Private executor heartbeat required')
+            raw = f.read(4097)
+        require(len(raw) <= 4096, 'Executor heartbeat exceeds bound')
+        value = json.loads(raw)
+        require(isinstance(value, dict) and value.get('version') == 1
+                and value.get('workflow') == operation and isinstance(value.get('executor'), dict)
+                and _timestamp(value.get('deadline')) and _timestamp(value.get('updated_at'))
+                and type(value.get('failed')) is bool and type(value.get('running')) is bool,
+                'Invalid executor heartbeat')
+        _identifier(value.get('operation'))
+        return value
+    except (OSError, ValueError, TypeError):
+        raise guard.MaintenanceIsolationError('Executor heartbeat unreadable; guard state unchanged') from None
+
+
+def running(operation):
+    """Observe an existing runner lock without creating files or changing state."""
+    operation = _identifier(operation)
+    try:
+        fd = os.open(directory() / (operation + '.lock'), os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return False
+    with os.fdopen(fd, 'rb') as f:
+        info = os.fstat(f.fileno())
+        require(stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid()
+                and not info.st_mode & 0o077, 'Private operation lock required')
+        try:
+            fcntl.flock(f, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        return False
+
+
+def _atomic_json(path, value):
+    raw = json.dumps(value, sort_keys=True, allow_nan=False).encode()
+    require(len(raw) <= MAX_BYTES, 'Maintenance record exceeds bounded storage')
+    root = path.parent
+    _private_directory(root)
     fd, temporary = tempfile.mkstemp(prefix='.operation-', dir=root)
     try:
-        with os.fdopen(fd, 'w') as f:
-            json.dump(value, f, sort_keys=True, allow_nan=False)
+        with os.fdopen(fd, 'wb') as f:
+            f.write(raw)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(temporary, root / (value['id'] + '.json'))
+        os.replace(temporary, path)
         d = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
         try:
             os.fsync(d)
@@ -176,6 +322,23 @@ def _write(value):
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
+
+
+def _write(value):
+    _validate_record(value, value['id'])
+    _atomic_json(directory() / (value['id'] + '.json'), value)
+
+
+def evidence(operation, sequence, data):
+    """Caller holds operation_lock; filenames are generated, not caller paths."""
+    operation = _identifier(operation)
+    require(type(sequence) is int and 0 <= sequence <= 4096, 'Invalid evidence sequence')
+    root = directory() / (operation + '.evidence')
+    root.mkdir(mode=0o700, exist_ok=True)
+    _private_directory(root)
+    path = root / (str(sequence) + '-' + uuid.uuid4().hex + '.json')
+    _atomic_json(path, data)
+    return {'path': str(path), 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
 
 
 def create(plan):
@@ -207,6 +370,8 @@ def approve(operation, expected_digest, *, reference, text, release_policy='sepa
         if value['approval'] == approval:
             return value
         value['approval'] = approval
+        if value['stage'] == 'preflight_ready':
+            value['stage'] = 'approved'
         _validate_record(value, operation)
         _write(value)
     return value

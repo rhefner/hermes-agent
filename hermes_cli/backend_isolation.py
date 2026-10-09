@@ -1,6 +1,7 @@
 """Explicit v1 -> backend-scoped migration and release; never rewrites a profile."""
 import argparse
 import json
+import math
 import os
 import sys
 import time
@@ -42,7 +43,7 @@ def migrate(backends, *, approval):
         return value
 
 
-def release(approval, *, expected_operation=None):
+def release(approval, *, expected_operation=None, expected_executor=None, not_after=None):
     if not approval or not approval.strip():
         raise guard.MaintenanceIsolationError('Explicit case-specific post-QA release approval required')
     with locked():
@@ -53,6 +54,18 @@ def release(approval, *, expected_operation=None):
         # release a newer window that started before we acquired the lock.
         if expected_operation is not None and value.get('operation') != expected_operation:
             raise guard.MaintenanceIsolationError('Maintenance operation changed; release refused')
+        if expected_executor is not None:
+            from agent import maintenance_admission as accounting
+            try:
+                alive = accounting.identity(expected_executor.get('pid')) == expected_executor
+            except (OSError, accounting.AdmissionClosed, AttributeError):
+                alive = False
+            if (expected_operation is None or value.get('executor') != expected_executor
+                    or value['phase'] != 'active' or not value.get('verified_at') or not alive):
+                raise guard.MaintenanceIsolationError('Maintenance executor changed; release refused')
+        if not_after is not None and (type(not_after) not in (int, float)
+                or not math.isfinite(not_after) or time.time() >= not_after):
+            raise guard.MaintenanceIsolationError('Maintenance release evidence expired; release refused')
         # Keep the inventory: future requests must be tracked before next entry.
         write_state(dict(value, phase='normal', affected=[], release_approval=approval,
                          released_at=time.time()))
@@ -63,7 +76,7 @@ def main():
         from hermes_cli.backend_workflow import main as workflow_main
         return workflow_main(sys.argv[2:])
     p = argparse.ArgumentParser(description=__doc__,
-        epilog='Preparation workflow: python -m hermes_cli.backend_isolation workflow --help')
+        epilog='Resumable workflow: python -m hermes_cli.backend_isolation workflow --help')
     p.add_argument('action', choices=('migrate', 'enter', 'resume', 'status', 'check', 'release'))
     p.add_argument('--inventory', type=Path)
     p.add_argument('--backend', action='append', default=[])

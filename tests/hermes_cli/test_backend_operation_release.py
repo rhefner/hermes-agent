@@ -93,3 +93,42 @@ def test_operation_expectation_is_not_silently_ignored_by_other_actions(fleet, m
         cli.main()
     assert error.value.code == 2
     assert fleet.read_bytes() == before
+
+
+def test_workflow_release_checks_executor_under_same_state_lock(fleet, monkeypatch):
+    first = enter()
+    original_lock = cli.locked
+    replacement = dict(first, executor=dict(first['executor'], start='replacement'))
+    boundary_state = []
+
+    @contextmanager
+    def changed_before_acquisition():
+        with original_lock():
+            legacy.write_state(replacement)
+            boundary_state.append(fleet.read_bytes())
+            yield
+
+    monkeypatch.setattr(cli, 'locked', changed_before_acquisition)
+    with pytest.raises(guard.MaintenanceIsolationError, match='executor'):
+        cli.release('fixture approval', expected_operation=first['operation'],
+                    expected_executor=first['executor'])
+    assert fleet.read_bytes() == boundary_state[0]
+
+
+def test_workflow_release_expiry_is_checked_under_state_lock(fleet, monkeypatch):
+    first = enter()
+    before = fleet.read_bytes()
+    original_lock = cli.locked
+    deadline = cli.time.time() + 1
+
+    @contextmanager
+    def time_passes_before_acquisition():
+        with original_lock():
+            monkeypatch.setattr(cli.time, 'time', lambda: deadline + 1)
+            yield
+
+    monkeypatch.setattr(cli, 'locked', time_passes_before_acquisition)
+    with pytest.raises(guard.MaintenanceIsolationError, match='expired'):
+        cli.release('fixture approval', expected_operation=first['operation'],
+                    expected_executor=first['executor'], not_after=deadline)
+    assert fleet.read_bytes() == before
