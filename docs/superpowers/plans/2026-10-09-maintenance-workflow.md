@@ -1,105 +1,100 @@
 # Resumable Backend Maintenance Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Keep all serving activity out of this development worktree.
+> Execute with the executing-plans skill. Keep all serving activity out of this development worktree.
 
-**Goal:** Implement the approved workflow incrementally without changing the existing guard authority or performing production maintenance.
+**Goal:** Implement the approved workflow without changing guard authority or performing production maintenance.
 
-**Architecture:** Preserve backend request enforcement and existing controller admission. A shared-fleet operation journal binds plans, approvals and evidence; a CLI drives a fixed reviewed controller adapter. Operation-bound release is the first independently testable safety primitive.
+**Architecture:** Existing request enforcement/controller admission remains authoritative. A private shared-fleet journal binds plans, approvals and evidence; an external CLI drives one fixed reviewed adapter. No scheduler, generic command runner or permanent model tool.
 
-**Tech Stack:** Python standard library, existing Hermes backend-isolation CLI, pytest through scripts/run_tests.sh, existing Nix Spark controllers.
+**Stack:** Python standard library, existing HTTPX/guard/controller dependencies, pytest through `scripts/run_tests.sh`.
 
 ## Execution boundaries
 
-Design approved by the user October 9, 2026. Worktree: `/home/hef/.hermes/hermes-agent/.worktrees/maintenance-workflow-design`, branch `design/maintenance-workflow`. Runtime main is not a development target. No SSH, inference probes, credential changes, isolation, model mutation, service restart or task redispatch during tests. Explicitly override both isolation and accounting directories.
+User approved the design October 9, 2026. Worktree: `/home/hef/.hermes/hermes-agent/.worktrees/maintenance-workflow-design`; branch: `design/maintenance-workflow`. Runtime main is not a development target. No live SSH/HTTP/inference, credential changes, production isolation, model mutation, restart or task redispatch. Explicitly isolate both guard and accounting roots in stateful tests.
 
-Implement and independently verify each batch before moving to the next. Do not report a journal or mocked adapter as a completed live maintenance workflow. Plans for later adapter integration must resolve the concrete transport and controller contracts before executable production wiring is added.
+Source implementation does not equal installation, running-loaded activation or live acceptance. The detailed evidence and final gate disposition belong in [the progress record](2026-10-09-maintenance-workflow-progress.md).
 
-## File ownership
+## Ownership
 
-- `hermes_cli/backend_isolation.py`: existing low-level operations; add optional operation-bound release without changing legacy recovery behavior.
-- `hermes_cli/backend_workflow_store.py`: private atomic operation records, per-operation locking, immutable digest-bound plan and approval validation.
-- `hermes_cli/backend_workflow.py`: workflow CLI and read-only status; no permanent model tool.
-- `hermes_cli/backend_workflow_run.py`: fixed workflow stages, intent/evidence writes, explicit recovery and release checks.
-- `hermes_cli/backend_workflow_spark.py`: concrete reviewed Spark controller adapter, bounded preflight and QA contracts. No arbitrary executable paths in a user plan.
-- `tests/hermes_cli/test_backend_operation_release.py`: real-state release and CLI race regressions.
-- `tests/hermes_cli/test_backend_workflow_store.py`: operation/approval immutability and filesystem/process integration.
-- `tests/hermes_cli/test_backend_workflow.py`: real CLI/import flows against temporary fleet state and deterministic host/controller doubles.
-- User documentation and existing maintenance skill: update only after the CLI actually works.
+- `hermes_cli/backend_isolation.py`: compatible low-level release extension; existing guard lock.
+- `hermes_cli/backend_workflow_store.py`: plan/approval/execution validation, private journal/evidence, process lock and heartbeat observation.
+- `hermes_cli/backend_workflow.py`: real CLI, read-only status and next-action guidance.
+- `hermes_cli/backend_workflow_run.py`: stage transitions, scoped execution, intent/results, fresh QA/release and explicit recovery.
+- `hermes_cli/backend_workflow_watch.py`: independent matching-generation heartbeat/deadline monitor; never a permission authority.
+- `hermes_cli/backend_workflow_spark.py`: fixed source-pinned controller/credential/metadata/QA adapter.
+- `hermes_cli/backend_workflow_tasks.py`: non-dispatching native task projection.
+- `tests/hermes_cli/test_backend_operation_release.py`, `test_backend_workflow_store.py`, `test_backend_workflow.py`, `test_backend_workflow_run.py`, `test_backend_workflow_spark.py`: behavioral and crash regressions.
+- `docs/maintenance-workflow.md`: supported operator interface; external/global skill publication belongs to activation, not this worktree.
 
-## Batch 1 — Bind release to the actual maintenance window
+## Batch 1 — Operation-bound release
 
-**Completed:** commit `55aaba6e3d`; real-state API/CLI/race regressions passed. The checklists below retain the implementation recipe; execution evidence is in the progress report.
+Completed in `55aaba6e3d`, with later executor/expiry hardening in the execution batch.
 
-- [ ] Read CLI instructions and current guard fixtures.
-- [ ] Add a real temporary-state fixture patching `agent.maintenance_inference.directory` and `agent.maintenance_admission.directory`; initialize a v2 guard using existing `migrate`/`enter` and a stub independent probe, not hand-written invalid state.
-- [ ] Add a regression proving a stale operation cannot release a newer window: enter operation A, save its ID, explicitly release A, enter B, call `release(approval, expected_operation=A)`. Assert MaintenanceIsolationError and byte-for-byte unchanged B state. Positive control releases B with B's ID and preserves inventory.
-- [ ] Add CLI coverage passing `--expected-operation` through the real parser. Wrong ID returns nonzero without writing state; matching ID releases normally.
-- [ ] Run `scripts/run_tests.sh tests/hermes_cli/test_backend_operation_release.py` and record the expected red result before implementing.
-- [ ] Implement the exact API change:
+- [x] Read existing CLI/guard fixtures; use real temporary v2 state and explicit guard/accounting roots.
+- [x] Observe failing stale-operation API/CLI regressions before implementation.
+- [x] Compare expected operation under the existing state lock; preserve the legacy explicitly authorized recovery release.
+- [x] Reject `--expected-operation` on unrelated low-level commands.
+- [x] Exercise replacement exactly at the lock boundary, not merely an asserted mock call.
+- [x] Extend optional under-lock checks to expected executor and QA/budget `not_after`; test expiry at lock acquisition.
+- [x] Run focused and deployed guard regression suites. No deployment.
 
-```python
-def release(approval, *, expected_operation=None):
-    # Existing approval validation stays before the lock.
-    with locked():
-        value = backend.configuration()
-        # Existing missing/normal operation refusal stays here.
-        if expected_operation is not None and value.get('operation') != expected_operation:
-            raise guard.MaintenanceIsolationError('Maintenance operation changed; release refused')
-        # Existing atomic normal-state write stays here.
-```
+## Batch 2 — Journal and preparation CLI
 
-- [ ] Add `p.add_argument('--expected-operation')`; forward it only to release. Reject its use with other actions rather than silently ignoring it.
-- [ ] Verify stale comparison happens under the same existing lock as the write using a lock-boundary test that replaces the operation immediately before yielding the lock. Do not merely assert a mock was called or inspect source text.
-- [ ] Run the new file and `tests/agent/test_backend_isolation.py`, `test_backend_facade.py`, `test_backend_request_hook.py`, `test_backend_dropped_response.py`, `test_maintenance_inference.py` through the canonical runner.
-- [ ] Review diff and commit only this primitive and its tests. Do not deploy it.
+Completed in `2612f1ed04`; foundation integration passed 127 tests across eight files.
 
-## Batch 2 — Operation journal and read-only CLI
+- [x] Strict supported plan schema, literal settings, internal IDs and canonical plan/QA digests; reject arbitrary commands/plugins/settings.
+- [x] Private fleet-scoped atomic durable journal/evidence and nonblocking per-operation execution lock; no guard schema migration.
+- [x] Existing v2 enrollment required before planning creates journal storage.
+- [x] Corruption, traversal, duplicate IDs, approval immutability, process-lock contention, private permissions and profile A/B/A coverage.
+- [x] Real subprocess `plan`, `approve`, `status`, `inspect` flows; actual guard state overlays historical progress.
+- [x] Separate release default and case-bound conditional opt-in; no execution capability claimed in the historical preparation-only checkpoint.
+- [x] Independent review corrections reproduced red and verified green.
 
-**Source-complete:** final combined run 127 passed, zero failed across eight files. Independent review findings were reproduced and corrected. Preparation-only; no controller execution is exposed.
+## Batch 3 — Concrete Spark adapter
 
-- [ ] Define a versioned strict plan schema: explicit backend names, supported adapter ID, pinned controller identity, approved delta/preserved settings, required QA names, time budget/margin, and linked task IDs. Unknown fields, duplicate targets, arbitrary command lists, and invalid IDs fail closed.
-- [ ] Canonical JSON SHA256 binds immutable plan and required QA; generate workflow IDs internally. Store under `guard.directory()/operations`, with private permissions and atomic durable replace. Do not overload or migrate guard state.
-- [ ] Use a separate nonblocking per-operation lock for execution; a read-only status call must not create directories or files.
-- [ ] Test corrupt/truncated records, traversal IDs, duplicate creation, immutable approval binding, concurrent process locking and A/B/A profiles against explicit temporary fleet/accounting roots.
-- [ ] Add real CLI `plan`, `status`/`inspect`, and `approve` paths. Status reports guard observations separately from recorded workflow progress. Approval requires an operator reference and matching digest; default release policy is separate approval. Conditional policy names the exact QA checklist.
-- [ ] Test subprocess CLI create/read/approve paths with real imports, not a mocked parser. Never label these preparation-only commands as an executable maintenance workflow.
-- [ ] Verify with canonical runner; commit this batch independently.
+- [x] Read actual Nix controller/QA/admission/SSH sources and prior facade QA; never execute them against hosts during development.
+- [x] Map concrete preflight, observation, apply, direct/facade QA and guarded normal-route contracts; preserve reviewed launch/backup/order logic.
+- [x] Pin local revision/clean source and both nodes' controller/admission/SSH bytes against immutable approved Git blobs.
+- [x] Match exact preserved settings and observed reserve; reject drift rather than silently overriding the plan.
+- [x] Read installed restricted authorization metadata, not installer expiry constants; verify budget/margin and recheck after slow independent probes.
+- [x] Check fixed facade route capability before isolation. Reusable bounded text/SSE/tools/thinking/vision transport, no retries/redirect/proxy inheritance.
+- [x] Track actual container/config/local hashes and `StartedAt`; verify originals, retained containers and approved candidates around every mutation and final readiness.
+- [x] Deterministic Docker/controller/HTTP transport fixtures, including real guarded HTTPX transport/reader locks and a full nine-mutation positive lifecycle. No remote execution is claimed.
+- [x] Real source import/constant/blob contract at Nix `5a9d85b2492c752efecf722eedd6ab1ac73f3f5e`, with credentials/network/non-Git subprocesses forbidden.
+- [x] Document the one supported operation and reject unsupported targets/adapters; do not imply generic model-update support.
 
-## Batch 3 — Concrete Spark adapter contract
+## Batch 4 — Execution and explicit recovery
 
-- [ ] Read the actual `glm53_eight_stream.py`, its QA runner, admission helper, restricted SSH checker and recorded facade-final QA invocation. Inspect source only; do not invoke scripts against hosts.
-- [ ] Map existing public controller operations to explicit preflight, observe, apply, direct-QA, facade-QA and normal-routing checks. Resolve which code is reusable and which was ad-hoc coordinator code before implementing adapter calls.
-- [ ] Source pins, model/context preservation, configuration backups, node ordering, credentials/expiry, dependency environment and executor probes must all have concrete output contracts. If a required QA capability lacks a callable reviewed implementation, extract it into a narrow separately tested supported adapter before allowing `run`.
-- [ ] Test using realistic recorded Docker/config fixtures and a local HTTP facade/server fixture. No model calls or remote SSH. Prove read-only operations cannot fall through into apply or upstream startup/DRY_RUN paths.
-- [ ] Record the supported operation set in documentation; reject all other adapters/settings rather than implying arbitrary model-update support.
-- [ ] Commit only after real adapter/import/CLI integration tests pass.
+- [x] Approved transitions around existing entry/probe/drain APIs; current exact scope, operation and PID/start/boot identity.
+- [x] Durable intent before mutation and verified result afterward; redacted recovery IDs/backups and serialized concurrent callbacks.
+- [x] Bounded controller/HTTP operations plus independent heartbeat/deadline interruption of only the matching executor/probe generation.
+- [x] No automatic mutation retries, rollback, affected-inference fallback or gateway activation.
+- [x] Eighteen before/after mutation-boundary cases; uncertain partial apply blocks and completed goal must be freshly observed before skipping replay.
+- [x] Real child SIGKILL at intent and lost-result boundaries; explicit resume rebinds executor and reruns fresh QA.
+- [x] Real CLI/import/state flow with temporary fleet state and serving doubles; distinguish lock/heartbeat activity from completion.
 
-## Batch 4 — Execute and resume safely
+## Batch 5 — QA-bound release
 
-- [ ] Implement approved stage transitions around existing guard APIs. Preflight checks before entry, then fresh checks and admission at each mutation. Persist intent before action and verified result after action.
-- [ ] Require the exact recorded guard operation and target set at each protected stage. Use existing process identity including start/boot identity, not PID existence alone.
-- [ ] Bound controller subprocesses, capture redacted evidence and maintain progress heartbeats. No automatic retries of mutation or fallback to affected inference.
-- [ ] Inject crashes before/after each mutation and before/after journal writes. Resume must observe actual state and either prove the next forward step safe or block with uncertainty. No automatic rollback, restart or release on failure.
-- [ ] Verify the full run/resume path through the real CLI and temporary guard, with deterministic host doubles and current request-drain tests. Commit only after these paths actually execute.
+- [x] Bind complete passing checks to workflow, plan, checklist, guard operation, source/config/container/start identities and time.
+- [x] Default separate approval and per-case conditional release; implementation approval is never release permission.
+- [x] Recheck actual identities, executor, health and receipt freshness before under-lock operation/executor/deadline comparison. Do not claim transactional remote observation.
+- [x] Reject missing/failed/stale QA, drift/restart, queued-only capacity and mismatched scope; retain exclusion.
+- [x] Prove normal primary/unaffected routes with supported guarded clients after release; report degraded/released on failure without rollback/re-isolation.
+- [x] Real SIGKILL after guard release/before receipt; recover verification without repeating deployment.
 
-## Batch 5 — QA-bound release and post-release verification
+## Batch 6 — Task projection, docs and source acceptance
 
-- [ ] Bind QA receipts to operation, plan, checklist, source/config/container identities and observation time. Missing, failed or stale direct/facade/unaffected checks block release.
-- [ ] Implement separate approval as default and explicit per-operation conditional approval as opt-in. Never infer a release approval from implementation approval.
-- [ ] Recheck executor, operation, identity and health; call the Batch 1 compare-under-lock release primitive. Keep identity/QA observations separate from the atomic operation check; do not claim it makes remote observations transactional.
-- [ ] Test a replacement operation race, executor loss, restart/config drift, queued-only capacity and changed checklist; all retain isolation.
-- [ ] Verify post-release normal primary and unaffected routes; failure records degraded/released without automatic rollback or re-isolation.
-- [ ] Commit only after matching positive controls and fail-closed negative tests pass.
+- [x] Read existing closure/dependency/dispatch/event APIs; do not call readiness recomputation, lifecycle hooks or cleanup.
+- [x] Approve full open descendant closure; atomically close selected tasks with existing native completion events and deduplicated audit events.
+- [x] Refuse live workers and unresolved pre-PID spawn claims; independently retry after the existing lifecycle settles.
+- [x] Real SIGKILL before projection and after DB commit/before journal receipt; no duplicate completion or serving replay.
+- [x] Explicit `reconciling`/`bookkeeping_pending`; only durable exact projection receipt permits `complete`.
+- [x] Operator guide and activation handoff covering credentials, approval syntax, supported scope, recovery blockers and publication of external maintenance instructions.
+- [x] Final whole integration rerun after every fix: 291 passed across 13 files; source-contract and diff checks passed. Exact runner/counts and red logs retained.
+- [x] Final independent review: no concrete blockers. Implementation committed as `24f132f0bc54bec56365e01f3420a2191c7ef6eb`. Engine, adapter, watchdog and projection ship together as one atomic executable capability, not a half-wired `run` command.
 
-## Batch 6 — Task projection, docs and acceptance
+## Coverage and rollout boundary
 
-- [ ] Read existing Kanban closure/dependency/dispatch APIs before wiring reconciliation. Never convert a blocked historical serving task to runnable as an intermediate step.
-- [ ] Restrict reconciliation to operation-linked IDs, make it independently retryable, and test partial failures/duplicate events without repeating serving steps. Preserve native wake rather than adding another notifier.
-- [ ] Update maintenance instructions to the actual supported CLI, credential expiry preflight, conditional release syntax and interrupted-operation recovery.
-- [ ] Run all workflow tests plus deployed guard/dispatcher/classifier regressions. Record exact counts and interpreter/runner; retain failed results rather than replacing evidence with a success summary.
-- [ ] Review changes against every requirement in the approved spec. Exercise inspection against local temporary production-shaped state without remote mutation; do not claim live deployment acceptance.
-- [ ] Produce an activation handoff separating source-tested, installed and running-loaded versions. No automatic gateway restart, model update or maintenance entry.
+Approved spec mapping: authority/storage (1–2), inspection/preflight/controller reuse (2–3), execution/recovery/status (4), QA/approval/release (1,5), projection/native wake/docs (6). Narrow restart/source/claim/time-window follow-ups strengthen these same gates rather than broaden scope.
 
-## Coverage audit
-
-Every approved spec section maps to a batch: operation authority/storage (2), explicit inspection/preflight (2–3), existing controller reuse (3), execution/recovery/status (4), approval and release (1,5), task reconciliation/wake/documentation (6). The live acceptance gate remains separate from source implementation.
+Live acceptance remains separate. Installing this source does not enter maintenance. Future authorized integration starts with inspection/preflight only; any real operation and any supervised gateway reload need their own authorization. The completed eight-stream rollout and historical task cards must not be replayed.

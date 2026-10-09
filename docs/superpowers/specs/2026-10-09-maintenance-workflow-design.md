@@ -1,6 +1,6 @@
 # Backend maintenance: one resumable workflow
 
-Status: user approved October 9, 2026; implementation in progress on an isolated branch, not deployed.
+Status: user approved October 9, 2026; source implementation complete and independently reviewed on an isolated branch (291 tests passed), not deployed.
 Base: Hermes 601e7f5a0c443f125efa0650845718c8ff7c016f.
 
 ## Goal and approved direction
@@ -35,18 +35,19 @@ The user approved the high-level direction on October 9: prepare before isolatio
 
 Extend the existing backend-isolation CLI family with a workflow entrypoint rather than a new permanent model tool. Implement small modules for operation storage/validation and workflow execution, following the CLI's existing conventions.
 
-Proposed user-facing operations:
+Implemented user-facing operations (exact syntax in `docs/maintenance-workflow.md`):
 
 - `plan`: resolve targets and a supported controller, produce a digest-bound change plan and required QA checklist; no serving writes.
-- `inspect`: read current operation, guard, targets, credential expiry and deployment observations; no inference or mutation unless an explicitly named probe is requested.
+- `inspect`: read journal/guard without writes or network; `inspect --live` additionally reads bounded controller/credential metadata, without inference or serving mutation.
 - `preflight`: run bounded prerequisite checks and explicit independent runtime/auxiliary probes; no serving writes or isolation.
 - `approve`: record trusted operator approval evidence for the exact plan and release policy; it does not execute changes.
 - `run`: execute the approved sequence, stopping at unmet gates.
 - `resume`: explicitly recover an interrupted operation after observing actual state and verifying the new executor; never blindly repeat mutation.
 - `release`: validate approval and fresh QA, then release only the matching guard operation.
-- `status`: report operation progress, actual guard state, worker liveness and next required action.
+- `status`: report operation progress, actual guard state, executor/heartbeat liveness and next required action.
+- `reconcile`: retry only the approved task projection after serving verification, without constructing a serving adapter.
 
-Commands above are interface semantics; implementation planning will settle exact argparse spelling while preserving the existing CLI actions.
+The entrypoint is `python -m hermes_cli.backend_isolation workflow`; existing low-level actions remain compatible.
 
 No arbitrary shell-command list is accepted as a maintenance plan. The first adapter calls reviewed, source-pinned Spark controller operations using explicit arguments. Unknown controllers or targets refuse. Adapter code is part of the reviewed trusted codebase, not dynamically loaded plugin code.
 
@@ -60,7 +61,7 @@ The journal records:
 - Plan digest, approved settings delta and preserved settings, controller/source identities.
 - Operator approval reference and text, release policy, QA checklist digest.
 - Executor identity, step intents/results, observation timestamps and evidence paths/digests.
-- Original/replacement container identities, protected backup references and recovery observations.
+- Original/replacement container identities and start times, pinned node dependency hashes, protected backup references and recovery observations.
 - Related task IDs and reconciliation result.
 
 Never store credentials, raw environment dumps or confidential prompt bodies. Use private permissions, atomic writes and a per-operation execution lock. Concurrent runners for the same operation refuse. The existing guard prevents concurrent conflicting entry.
@@ -69,7 +70,7 @@ The journal is authoritative for workflow progress, not for backend permissions.
 
 ## Sequence and gates
 
-`planned -> preflight-ready -> approved -> isolated -> applying -> verifying -> awaiting-release -> released -> complete`
+`planned -> preflight_ready -> approved -> isolated -> applying -> verifying -> awaiting_release -> released -> reconciling -> complete`
 
 These are workflow stages, not new guard phases. Failures record a blocked/interrupted condition and the last verified stage rather than inventing another successful transition.
 
@@ -77,7 +78,7 @@ These are workflow stages, not new guard phases. Failures record a blocked/inter
 
 Preflight checks source and controller compatibility; configured targets; main/auxiliary independent execution; dependency environment; credential validity and expiry; source pins; current launch/config observations; reviewed backup method; and required direct/facade QA capability.
 
-Credential coverage must exceed the declared execution-plus-QA time budget and safety margin. Insufficient lifetime blocks before isolation and requests a specific renewal. There is no implicit renewal. Credential expiry during maintenance stops new protected actions; it does not release traffic.
+Credential coverage must exceed the declared execution-plus-QA time budget and safety margin, including a recheck after potentially slow independent probes. Insufficient lifetime blocks before isolation and requests a specific renewal. There is no implicit renewal. Credential expiry during maintenance stops new protected actions; it does not release traffic.
 
 Read-only inspections are fixed supported operations with bounded arguments and output redaction. Source-only fixture tests run with explicit temporary guard/accounting directories and cannot access production state. Do not run upstream startup/DRY_RUN scripts merely because they claim to be read-only.
 
@@ -91,17 +92,17 @@ If a process dies between action and receipt, resume inspects real container/con
 
 Recoverable forward steps inside the approved delta may proceed without asking routine implementation questions. Scope expansion, rollback, gateway restart, credential changes or new model changes require the corresponding explicit authorization.
 
-Long steps have bounded timeouts and heartbeats. Status distinguishes running, ready/queued, blocked, interrupted, awaiting approval and completed using actual executor/worker identity. A dead worker cannot remain reported as running.
+Long steps have bounded timeouts and an independent heartbeat/deadline monitor, fenced to the matching operation/executor/probe generation. Expiry interrupts admission without releasing traffic or killing/restarting serving processes; already-issued bounded I/O may still settle. Status distinguishes running, ready/queued, blocked, interrupted, awaiting approval and completed using actual executor/worker identity. A dead worker cannot remain reported as running.
 
 ### QA and release
 
 Required QA is declared before approval, including direct engine checks, facade-path checks, preserved configuration, both rank health, and unaffected-backend availability. Operation-specific overlap/capacity checks must observe engine execution rather than accepted request counts. Long-context capacity is not inferred from a short test.
 
-Evidence binds to the operation, plan, deployed code/config/container identities and checklist. Configuration drift, a restart, failed checks or a changed checklist invalidates relevant evidence and prevents conditional release.
+Evidence binds to the operation, plan, deployed code/config/container/start identities and checklist. Node controller/admission/SSH helpers are compared to immutable approved Git blobs before isolation and each mutation/direct QA request. Original/retained and candidate start identities are checked around every mutation and final readiness; only approved create/start transitions advance them. Configuration drift, a restart, failed checks or a changed checklist invalidates relevant evidence and prevents conditional release.
 
 QA of an excluded backend uses the existing explicitly authorized QA transport, never a global temporary bypass or normal agent inference. If a supported facade QA path is unavailable, preflight reports that before isolation; do not invent one during execution.
 
-For conditional release, verify that every required check passed, approval still matches the plan, the executor is valid, and current health/identities match. Then use the existing release implementation with an expected-operation check performed under its state lock. This small extension is necessary: current release accepts approval text but does not compare a caller-supplied operation ID. A check outside the lock is insufficient.
+For conditional release, verify that every required check passed, approval still matches the plan, the executor is valid, and current health/identities match. Then use the existing release implementation with optional expected-operation, expected-executor and QA/budget expiry checks performed under its state lock. The compatible extension closes the old approval-text-only comparison gap; checks outside the lock are insufficient.
 
 After release, verify normal primary and unaffected routing through supported clients. If this post-release check fails, report a degraded/released operation, not success; do not automatically roll back or re-isolate without appropriate authorization.
 
@@ -109,7 +110,7 @@ The existing low-level release remains available for explicitly authorized opera
 
 ## Task reconciliation and notifications
 
-Accept only task IDs linked to this operation. Report completion from verified evidence; never unblock a historical deployment merely to fix its label. Use existing Kanban non-dispatchable/closure controls in an order that cannot make stale mutation tasks runnable. Reconciliation failure leaves a visible administrative warning; it never repeats deployment or withholds a safely approved release.
+Accept only task IDs linked to this operation. Report completion from verified evidence; never unblock a historical deployment merely to fix its label. Use existing Kanban non-dispatchable/closure controls in an order that cannot make stale mutation tasks runnable. Reconciliation failure leaves a visible `reconciling` / `bookkeeping_pending` state; only its durable exact receipt permits `complete`. It never repeats deployment or withholds a safely approved release. The first implementation targets the existing fleet default board, requires the explicitly approved open descendant closure, and refuses live workers or unresolved pre-PID spawn claims. It does not pause unrelated scheduler activity or run readiness/lifecycle/cleanup hooks.
 
 Send progress on stage changes, real blockers, and completion, not a stream of obsolete retry notifications. Existing event/task IDs provide deduplication. Reuse native completion wake; do not add another wake mechanism. Reconciliation and notification failures are independently retryable bookkeeping steps.
 
@@ -147,4 +148,5 @@ Keep development on an isolated branch/worktree. No running gateway restart or m
 - [x] Write concrete scope, gates, recovery semantics and acceptance criteria.
 - [x] Self-review: preserve one guard authority; operation-bound release under lock; no silent post-failure actions; no placeholder sections.
 - [x] User reviews this written design.
-- [ ] Create the implementation plan, then implement and test in isolation.
+- [x] Create the implementation plan, then implement and test in isolation.
+- [x] Finish final independent source review/integration gates; installation and live acceptance remain separate.
