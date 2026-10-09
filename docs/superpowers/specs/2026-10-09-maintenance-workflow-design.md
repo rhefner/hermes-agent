@@ -1,6 +1,6 @@
 # Backend maintenance: one resumable workflow
 
-Status: design for user review; not implemented or deployed.
+Status: user approved October 9, 2026; implementation in progress on an isolated branch, not deployed.
 Base: Hermes 601e7f5a0c443f125efa0650845718c8ff7c016f.
 
 ## Goal and approved direction
@@ -146,5 +146,5 @@ Keep development on an isolated branch/worktree. No running gateway restart or m
 - [x] Record the approved high-level direction and conservative approval defaults.
 - [x] Write concrete scope, gates, recovery semantics and acceptance criteria.
 - [x] Self-review: preserve one guard authority; operation-bound release under lock; no silent post-failure actions; no placeholder sections.
-- [ ] User reviews this written design.
+- [x] User reviews this written design.
 - [ ] Create the implementation plan, then implement and test in isolation.
