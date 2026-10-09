@@ -2014,8 +2014,12 @@ def dispatch_once(
 def _call_spawn_fn(spawn_fn, task: Task, workspace: str, board: Optional[str]) -> Optional[int]:
     """Back-compat: older spawn_fn signatures (and test stubs) accept only
     ``(task, workspace)``; pass ``board`` only when the callable supports it."""
-    from agent.maintenance_inference import refuse_unverified_extension
-    refuse_unverified_extension()  # includes reviewer/custom dispatch callbacks
+    from agent.maintenance_inference import refuse_unverified_extension, legacy_state
+    # Core workers use the shared route/transport guard themselves. Treat only
+    # injected callbacks as opaque extensions under backend-scoped isolation.
+    # Preserve the old blanket dispatch contract for unmigrated v1 state.
+    if spawn_fn is not _default_spawn or legacy_state() is not None:
+        refuse_unverified_extension()
     import inspect
     try:
         sig = inspect.signature(spawn_fn)
