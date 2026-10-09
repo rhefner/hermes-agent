@@ -41,13 +41,17 @@ def migrate(backends, *, approval):
         return value
 
 
-def release(approval):
+def release(approval, *, expected_operation=None):
     if not approval or not approval.strip():
         raise guard.MaintenanceIsolationError('Explicit case-specific post-QA release approval required')
     with locked():
         value = backend.configuration()
         if not value or value['phase'] == 'normal':
             raise guard.MaintenanceIsolationError('No backend operation to release')
+        # Compare under the state lock: a prior operation's approval must not
+        # release a newer window that started before we acquired the lock.
+        if expected_operation is not None and value.get('operation') != expected_operation:
+            raise guard.MaintenanceIsolationError('Maintenance operation changed; release refused')
         # Keep the inventory: future requests must be tracked before next entry.
         write_state(dict(value, phase='normal', affected=[], release_approval=approval,
                          released_at=time.time()))
@@ -61,14 +65,17 @@ def main():
     p.add_argument('--model')
     p.add_argument('--executor-pid', type=int)
     p.add_argument('--approval')
+    p.add_argument('--expected-operation', help='Release only this maintenance operation')
     a = p.parse_args()
+    if a.expected_operation is not None and a.action != 'release':
+        p.error('--expected-operation requires release')
     try:
         if a.action == 'migrate':
             value = migrate(json.loads(a.inventory.read_text()), approval=a.approval)
         elif a.action in ('enter', 'resume'):
             value = backend.enter(a.backend, a.model, executor_pid=a.executor_pid, resume=a.action == 'resume')
         elif a.action == 'release':
-            release(a.approval)
+            release(a.approval, expected_operation=a.expected_operation)
             value = backend.observed()
         elif a.action == 'check':
             value = backend.require_mutation(a.backend)
