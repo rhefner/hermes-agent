@@ -370,7 +370,8 @@ trace-upload = ["huggingface-hub==1.24.0"]
 # win32-arm64 gate as google-chat. mem0 is lazy-installed, so on arm64 the
 # provider is simply unavailable.
 mem0 = [
-  "mem0ai==2.0.10; platform_machine != 'ARM64' or sys_platform != 'win32'",
+  "mem0ai[nlp]==2.0.10; platform_machine != 'ARM64' or sys_platform != 'win32'",
+  "fastembed; platform_machine != 'ARM64' or sys_platform != 'win32'",
 ]
 # Image resize recovery for the vision tools. Pillow is now a CORE dependency
 # (see the main `dependencies` list above) since the byte/pixel shrink paths are on
