@@ -2,6 +2,7 @@
 import argparse
 import json
 import os
+import sys
 import time
 import uuid
 from pathlib import Path
@@ -58,7 +59,11 @@ def release(approval, *, expected_operation=None):
 
 
 def main():
-    p = argparse.ArgumentParser(description=__doc__)
+    if sys.argv[1:2] == ['workflow']:
+        from hermes_cli.backend_workflow import main as workflow_main
+        return workflow_main(sys.argv[2:])
+    p = argparse.ArgumentParser(description=__doc__,
+        epilog='Preparation workflow: python -m hermes_cli.backend_isolation workflow --help')
     p.add_argument('action', choices=('migrate', 'enter', 'resume', 'status', 'check', 'release'))
     p.add_argument('--inventory', type=Path)
     p.add_argument('--backend', action='append', default=[])

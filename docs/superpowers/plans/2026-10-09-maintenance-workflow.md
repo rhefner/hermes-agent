@@ -28,6 +28,8 @@ Implement and independently verify each batch before moving to the next. Do not 
 
 ## Batch 1 — Bind release to the actual maintenance window
 
+**Completed:** commit `55aaba6e3d`; real-state API/CLI/race regressions passed. The checklists below retain the implementation recipe; execution evidence is in the progress report.
+
 - [ ] Read CLI instructions and current guard fixtures.
 - [ ] Add a real temporary-state fixture patching `agent.maintenance_inference.directory` and `agent.maintenance_admission.directory`; initialize a v2 guard using existing `migrate`/`enter` and a stub independent probe, not hand-written invalid state.
 - [ ] Add a regression proving a stale operation cannot release a newer window: enter operation A, save its ID, explicitly release A, enter B, call `release(approval, expected_operation=A)`. Assert MaintenanceIsolationError and byte-for-byte unchanged B state. Positive control releases B with B's ID and preserves inventory.
@@ -52,6 +54,8 @@ def release(approval, *, expected_operation=None):
 - [ ] Review diff and commit only this primitive and its tests. Do not deploy it.
 
 ## Batch 2 — Operation journal and read-only CLI
+
+**Source-complete:** final combined run 127 passed, zero failed across eight files. Independent review findings were reproduced and corrected. Preparation-only; no controller execution is exposed.
 
 - [ ] Define a versioned strict plan schema: explicit backend names, supported adapter ID, pinned controller identity, approved delta/preserved settings, required QA names, time budget/margin, and linked task IDs. Unknown fields, duplicate targets, arbitrary command lists, and invalid IDs fail closed.
 - [ ] Canonical JSON SHA256 binds immutable plan and required QA; generate workflow IDs internally. Store under `guard.directory()/operations`, with private permissions and atomic durable replace. Do not overload or migrate guard state.
