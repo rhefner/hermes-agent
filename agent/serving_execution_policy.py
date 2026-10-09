@@ -9,6 +9,7 @@ import re
 import shlex
 
 from agent import serving_admission
+from agent.serving_readonly import python_readonly, shell_readonly
 
 TARGET = re.compile(r'(?:spark[-_ ]?[123]|spark-lane|spark3|glm[-_ ]?5|glm53|vllm|sglang|'
                     r'ollama|comfyui|tensorfold|primary(?:-ablit)?|secondary|'
@@ -69,7 +70,11 @@ def _plain_git_diff(text):
 def recognizable_mutation(text):
     if not isinstance(text, str):
         return False
-    if _plain_git_diff(text):
+    if _plain_git_diff(text) or shell_readonly(text):
+        return False
+    # This entrypoint also receives shell text. A Python string expression can
+    # be a shell command substitution, so never infer Python across expansions.
+    if '$' not in text and '`' not in text and python_readonly(text):
         return False
     # Handle shell token splicing and Python argv-list punctuation, retaining raw
     # text too so quoted remote payloads and nested interpreter code remain visible.
