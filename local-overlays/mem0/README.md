@@ -26,3 +26,17 @@ mem0.json says `"read_only": true` (coding, media, ops, research, reviewer) woul
 `hermes plugins install --force mem0` / a catalog pin bump overwrites the tree, so re-run the patch after either.
 The durable fix is a fork of `integrations/hermes-plugin-mem0` carrying this patch, installed with
 `hermes plugins install <owner>/<repo> --ref <sha>` (same plugin name `mem0`, so memory.provider is unchanged).
+
+## 3. Skip LLM extraction while maintenance isolation excludes its backend  (`mem0-plugin-isolation-skip.patch`)
+
+OSS-mode `sync_turn` extraction (`add(infer=True)`) calls the configured Mem0 LLM. The patch adds
+`_extraction_blocked()` to the vendor plugin: it asks `agent.maintenance_inference.require_route()` about the
+`mem0.json` `oss.llm` URL + model (and about any inventoried endpoint that resolves to the same host:port, so an
+IP alias of an inventoried hostname is recognised). If that raises `MaintenanceIsolationError` the extraction is
+skipped (debug log at most once a minute), the profile stays recall-only, and nothing is raised into the turn.
+Search, embeddings and explicit `mem0_add` (`infer=False`) are never gated; platform/self-hosted modes are not gated.
+Independent of the read-only patch (apply in either order; both are needed on read-only profiles):
+
+    patch -p1 -d "$HERMES_HOME/plugins/mem0" < local-overlays/mem0/mem0-plugin-isolation-skip.patch
+
+Like the read-only patch it is overwritten by `hermes plugins install --force mem0` / a catalog pin bump: re-apply.

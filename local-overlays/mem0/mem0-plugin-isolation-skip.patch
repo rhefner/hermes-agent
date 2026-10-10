@@ -1,0 +1,61 @@
+diff --git a/__init__.py b/__init__.py
+--- a/__init__.py
++++ b/__init__.py
+@@ -250,7 +250,57 @@
+         # principal; writes attach agent_id and metadata.channel so narrower views remain possible at query time.
+         return (backend or self._backend).search(query, filters={"user_id": self._user_id}, top_k=top_k, rerank=rerank)
+ 
++    def _extraction_blocked(self) -> bool:
++        """Local overlay (mem0-plugin-isolation-skip): True while maintenance isolation excludes the OSS extraction LLM.
++
++        Embeddings and search are never gated. Fails open on anything but MaintenanceIsolationError.
++        """
++        if self._mode != "oss":
++            return False  # platform/self-hosted extraction runs server-side; not an inventoried local backend
++        try:
++            from agent import maintenance_inference as guard
++            if guard.state() is None:  # phase normal / no isolation: nothing to check
++                return False
++            llm = (self._config or {}).get("oss", {}).get("llm", {}) or {}
++            cfg = llm.get("config", {}) or {}
++            url = cfg.get("openai_base_url") or cfg.get("ollama_base_url") or cfg.get("api_base") or (
++                "http://localhost:11434" if llm.get("provider") == "ollama" else "https://api.openai.com/v1")
++            model = cfg.get("model")
++            urls = [url]
++            # An IP/alias of an inventoried endpoint is the same backend: add inventoried endpoints that resolve alike.
++            value = guard.state(include_normal=True)
++            if value and value.get("version") == 2:
++                import socket
++                from urllib.parse import urlsplit
++
++                def _addrs(u):
++                    s = urlsplit(u)
++                    port = s.port or (443 if s.scheme == "https" else 80)
++                    return {(a[4][0], port) for a in socket.getaddrinfo(s.hostname, port, proto=socket.IPPROTO_TCP)}
++                try:
++                    mine = _addrs(url)
++                    for endpoints in value.get("backends", {}).values():
++                        for ep in endpoints:
++                            with suppress(Exception):
++                                if ep not in urls and _addrs(ep) & mine:
++                                    urls.append(ep)
++                except Exception:
++                    pass
++            for u in urls:
++                guard.require_route(llm.get("provider"), model, u, None, resolved=True)
++            return False
++        except Exception as e:
++            if type(e).__name__ != "MaintenanceIsolationError":
++                return False
++            now = time.monotonic()
++            if now - getattr(self, "_skip_logged_at", -60.0) >= 60.0:
++                self._skip_logged_at = now
++                logger.debug("Mem0 extraction skipped (recall-only) by maintenance isolation: %s", e)
++            return True
++
+     def _add(self, messages: list, infer: bool):
++        if infer and self._extraction_blocked():
++            return {"results": [], "skipped": "maintenance-isolation"}
+         metadata = {"channel": self._channel} if self._channel else {}
+         return self._backend.add(messages, user_id=self._user_id, agent_id=self._agent_id, infer=infer, metadata=metadata)
+ 
