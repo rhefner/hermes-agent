@@ -5,6 +5,12 @@ import sys
 
 import pytest
 
+# Bootstrap the installed dependency environment during collection, before the
+# per-test real-home I/O fence is enabled. Other CLI integration tests likewise
+# import entry-point modules at collection time; do not disable that fence or
+# allow the real install manifest from inside a test fixture.
+import hermes_bootstrap  # noqa: F401
+
 pytestmark = pytest.mark.platforms('linux')
 
 
