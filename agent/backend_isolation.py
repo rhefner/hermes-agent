@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import ipaddress
 import json
 import os
 import re
@@ -117,6 +118,34 @@ def request_model(request):
     return model if isinstance(model, str) and model.strip() else None
 
 
+_PRIVATE_SUFFIXES = ('.local', '.lan', '.internal', '.hef.run', '.ts.net', '.localhost', '.home.arpa')
+
+
+def public_internet_host(url):
+    """True only for a host that is provably on the public internet.
+
+    An uninventoried route is not an affected backend, so it may be used under
+    isolation, but only when it cannot be a hidden alias of an inventoried
+    private backend. No DNS at request time: literal IPs must be globally
+    routable (not loopback, RFC1918, link-local, CGNAT/tailnet, ULA), and names
+    must be dotted, end in an alphabetic label and avoid private suffixes.
+    Anything ambiguous (odd numeric forms, single labels) is not public.
+    """
+    try:
+        host = (urlsplit(str(url)).hostname or '').lower().rstrip('.')
+    except ValueError:
+        return False
+    if not host:
+        return False
+    try:
+        return ipaddress.ip_address(host).is_global
+    except ValueError:
+        pass
+    labels = host.split('.')
+    return (len(labels) > 1 and labels[-1].isalpha()
+            and not host.endswith(_PRIVATE_SUFFIXES))
+
+
 def require_route(value, provider, model, url, api_mode, *, resolved):
     # Unresolved provider names/aliases are not physical endpoints. The resolver
     # rechecks its result, then the transport checks every retry and redirect.
@@ -132,7 +161,9 @@ def require_route(value, provider, model, url, api_mode, *, resolved):
     if guard.cloud_url(url):
         return
     name = backend(value, url, model)
-    if name is None:
+    # Fail closed only for what could be a hidden alias of a private backend;
+    # unlisted public-internet providers (Nous, xAI, ...) are independent routes.
+    if name is None and not public_internet_host(url):
         raise guard.MaintenanceIsolationError('Maintenance refuses an uninventoried inference backend; inventory its aliases before use')
     if name is UNRESOLVED:
         raise guard.MaintenanceIsolationError('Maintenance cannot attribute the shared-facade model to an inventoried backend; declare its ownership in the inventory')
