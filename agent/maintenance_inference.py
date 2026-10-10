@@ -166,5 +166,7 @@ def dispatch_route(profile_home):
 
 
 def refuse_unverified_extension():
-    if state():
+    # Backend isolation (v2) guards inventoried backends at the HTTP/route layer;
+    # only the legacy global contract blanket-refuses plugin/media/memory paths.
+    if legacy_state():
         raise MaintenanceIsolationError("Maintenance isolation blocks unverified plugin inference/media/memory backends. Use core verified external inference or explicit read-only QA outside agent inference.")
