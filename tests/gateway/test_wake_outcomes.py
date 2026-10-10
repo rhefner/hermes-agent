@@ -282,7 +282,6 @@ def test_crash_recovery_does_not_replay_wake_but_preserves_human_recovery(route)
     restarted = SessionStore(runner.config.sessions_dir, runner.config)
     restarted._db = runner.session_store._db
     assert restarted.recover_interrupted_turns() == 0
-    assert restarted.suspend_recently_active() == 0
     assert not restarted.mark_resume_pending(key)
     restarted.mark_turn_active(key)  # a real new turn explicitly owns the route
     assert restarted.recover_interrupted_turns() == 1

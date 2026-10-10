@@ -77,3 +77,17 @@ def _reset_session_context_vars():
     _reset_all()
     yield
     _reset_all()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_maintenance_inference_dir(tmp_path, monkeypatch):
+    """Keep run_job's maintenance-admission probe off the operator's real ~/.hermes.
+
+    ``cron.scheduler.run_job`` is wrapped by ``agent.maintenance_admission``, which reads the fleet-wide
+    ``~/.hermes/maintenance-inference`` store. Several cron tests ``importlib.reload(hermes_constants)``,
+    which discards the conftest's hermetic platform-home seam, so the probe reached the real home and the
+    home I/O guard refused it.
+    """
+    import agent.maintenance_inference as maintenance_inference
+
+    monkeypatch.setattr(maintenance_inference, "directory", lambda: tmp_path / "maintenance-inference")
