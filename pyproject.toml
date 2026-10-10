@@ -256,6 +256,18 @@ kittentts = [
 piper = [
   "piper-tts==1.8.0; (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or sys_platform != 'darwin')",
 ]
+# LOCAL OVERLAY (Richard's fork, not upstream): NLP for the catalog Mem0 plugin's OSS mode. Mem0 moved out of
+# core into plugin-catalog/mem0.yaml, whose plugin declares only `mem0ai>=2.0.10,<3`. Without the [nlp] extra
+# Mem0 loses lemmatization/BM25 keyword scoring, so install this extra into the same PM environment as the
+# plugin (`hermes pm install --extra mem0-nlp`). Plugin deps cannot carry direct URLs (pm.plugin_declarations
+# drops them), hence the spaCy model lives here. en_core_web_sm is not on PyPI; 3.8.0 is the release
+# spacy-models lists for spaCy 3.8.x and uv.lock records the wheel hash. mem0ai/fastembed are exact pins like
+# every other extra; mem0ai==2.0.10 satisfies the plugin's >=2.0.10,<3.
+mem0-nlp = [
+  "mem0ai[nlp]==2.0.10; platform_machine != 'ARM64' or sys_platform != 'win32'",
+  "fastembed==0.8.1; platform_machine != 'ARM64' or sys_platform != 'win32'",
+  "en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl ; platform_machine != 'ARM64' or sys_platform != 'win32'",
+]
 modal = ["modal==1.5.5"]
 daytona = ["daytona==0.155.0"]
 vercel = ["vercel==0.7.2"]
@@ -564,7 +576,7 @@ hermes-acp = "acp_adapter.entry:main"
 # build with --all-extras and pass --no-extra for each of these, so their
 # closures never ship. KittenTTS pulls torch, transformers and spaCy through
 # misaki[en]: installed when the user picks it, not preinstalled.
-opt-in-extras = ["kittentts"]
+opt-in-extras = ["kittentts", "mem0-nlp"]
 
 # Per-extra platform gates (settled 2026-09-02): an extra listed here is
 # only installable on platforms matching the marker. pm consults this
@@ -593,6 +605,8 @@ neutts = "python_version < '3.14'"
 # Windows ARM64 wheel.
 kittentts = "(platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or sys_platform != 'darwin')"
 piper = "(platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or sys_platform != 'darwin')"
+# qdrant-client -> grpcio (via mem0ai) has no win_arm64 wheel.
+mem0-nlp = "platform_machine != 'ARM64' or sys_platform != 'win32'"
 
 [tool.uv]
 # uv otherwise enables the dev group by default, including in payload builds.
@@ -704,6 +718,7 @@ elevenlabs = false
 exa-py = false
 fal-client = false
 fastapi = false
+fastembed = false
 faster-whisper = false
 fire = false
 firecrawl-anydoc = false
@@ -725,6 +740,7 @@ markdown = false
 maturin = false
 mautrix = false
 mcp = false
+mem0ai = false
 microsoft-teams-apps = false
 mistralai = false
 modal = false
