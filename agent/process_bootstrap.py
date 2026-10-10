@@ -292,9 +292,10 @@ def build_keepalive_http_client(base_url: str = "", *, async_mode: bool = False,
         client_cls = httpx.AsyncClient if async_mode else httpx.Client
         from agent.maintenance_inference import check_http_request, check_async_http_request
         if proxy is not None:
-            from agent.backend_isolation import configuration
+            from agent.backend_isolation import backends_at, configuration
             proxied = configuration()
-            if proxied is not None and proxied['phase'] != 'normal':
+            if (proxied is not None and proxied['phase'] != 'normal'
+                    and backends_at(proxied, base_url)):
                 from agent.maintenance_inference import MaintenanceIsolationError
                 raise MaintenanceIsolationError('Proxy inference cannot provide backend response tracking')
         # Model-aware hooks recheck cached clients and redirects; the wrapped

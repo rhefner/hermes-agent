@@ -217,8 +217,8 @@ def load_memory_provider(name: str, *, register_skills: Optional[bool] = None) -
     None if not found or failing to load. Skills register only for the configured
     active provider unless ``register_skills`` is explicit, so inspecting inactive
     providers leaves no registry side effects."""
-    from agent.maintenance_inference import state
-    if state():
+    from agent.maintenance_inference import legacy_state
+    if legacy_state():
         logger.warning("External memory plugins disabled by maintenance inference isolation")
         return None
     if register_skills is None:

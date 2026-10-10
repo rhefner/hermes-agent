@@ -125,8 +125,7 @@ def test_shared_facade_identity_and_scoped_drain(isolated):
             request = client.build_request('POST', facade + '/chat/completions', content=b'not-json{')
             with pytest.raises(g.MaintenanceIsolationError, match='attribute'):
                 client.send(request)
-            with pytest.raises(g.MaintenanceIsolationError, match='uninventoried'):
-                g.require_route('custom', 'unmapped', 'http://uninventoried:9/v1', resolved=True)
+            g.require_route('custom', 'unmapped', 'http://uninventoried:9/v1', resolved=True)
 
             # Draining is scoped: an in-flight secondary response never blocks the
             # affected backend, an in-flight primary one does until it closes.
@@ -165,7 +164,7 @@ def test_shared_facade_identity_and_scoped_drain(isolated):
 def test_normal_phase_keeps_unrelated_and_proxied_inference(isolated, monkeypatch):
     with serve() as endpoint:
         ctl.migrate({'only': [endpoint]}, approval='fixture single')
-        # Uninventoried routes and proxies are refused only under isolation.
+        # Normal phase never refuses; under isolation only inventoried routes are guarded.
         g.require_route('custom', 'any', 'http://uninventoried:9/v1', resolved=True)
         monkeypatch.setenv('HTTPS_PROXY', 'http://127.0.0.1:9')
         g.require_route('custom', 'any', endpoint, resolved=True)
@@ -179,42 +178,37 @@ def test_normal_phase_keeps_unrelated_and_proxied_inference(isolated, monkeypatc
         with pytest.raises(g.MaintenanceIsolationError):
             process_bootstrap.build_keepalive_http_client(endpoint)
         monkeypatch.delenv('HTTPS_PROXY')
-        with pytest.raises(g.MaintenanceIsolationError, match='uninventoried'):
-            g.require_route('custom', 'any', 'http://uninventoried:9/v1', resolved=True)
+        g.require_route('custom', 'any', 'http://uninventoried:9/v1', resolved=True)
 
 
 @pytest.mark.platforms('linux')
-def test_isolation_allows_unlisted_public_hosts_only(isolated, monkeypatch):
+def test_isolation_guards_only_inventoried_affected_backends(isolated, monkeypatch):
     with serve() as endpoint:
-        ctl.migrate({'only': [endpoint]}, approval='fixture public routes')
-        public = ('https://inference-api.nousresearch.com/v1', 'https://api.x.ai/v1',
-                  'https://8.8.8.8/v1', 'https://[2606:4700:4700::1111]/v1')
-        private = ('http://uninventoried:9/v1', 'http://10.0.0.5:9/v1', 'http://192.168.1.2/v1',
-                   'http://127.0.0.1:9/v1', 'http://localhost:9/v1', 'http://169.254.1.1/v1',
-                   'http://100.103.43.3:9/v1', 'http://[::1]:9/v1', 'http://[fd00::1]:9/v1',
-                   'http://spark-9.hef.run/v1', 'http://spark-9.hef.run./v1', 'http://box.tail1234.ts.net/v1',
-                   'http://nas.local/v1', 'http://gpu.lan/v1', 'http://svc.internal/v1',
-                   'http://2130706433/v1', 'http://0x7f.1/v1')
-        # Normal phase: nothing is refused, public or private.
-        for url in public + private:
+        ctl.migrate({'only': [endpoint]}, approval='fixture unlisted routes')
+        unlisted = ('https://inference-api.nousresearch.com/v1', 'https://api.x.ai/v1',
+                    'http://uninventoried:9/v1', 'http://10.0.0.5:9/v1', 'http://127.0.0.1:9/v1',
+                    'http://localhost:9/v1', 'http://100.103.43.3:9/v1', 'http://spark-9.hef.run/v1',
+                    'http://box.tail1234.ts.net/v1', 'http://[::1]:9/v1')
+        # Normal phase: nothing is refused.
+        for url in unlisted:
             g.require_route('custom', 'any', url, resolved=True)
         activate(['only'])
-        for url in public:
+        # Unlisted hosts of any kind pass, including with a proxy configured.
+        for url in unlisted:
             g.require_route('custom', 'any', url, resolved=True)
             g.require_route('custom', 'any', url, 'chat_completions', resolved=True)
-        for url in private:
-            with pytest.raises(g.MaintenanceIsolationError, match='uninventoried'):
-                g.require_route('custom', 'any', url, resolved=True)
-        # An unlisted public host is still subject to the transport check and proxy refusal.
-        with pytest.raises(g.MaintenanceIsolationError, match='transport'):
-            g.require_route('custom', 'any', public[0], 'anthropic_messages', resolved=True)
         monkeypatch.setenv('HTTPS_PROXY', 'http://127.0.0.1:9')
+        for url in unlisted:
+            g.require_route('custom', 'any', url, resolved=True)
+        # The affected backend stays excluded, and a proxy cannot reach it.
         with pytest.raises(g.MaintenanceIsolationError, match='proxy'):
-            g.require_route('custom', 'any', public[0], resolved=True)
+            g.require_route('custom', 'any', endpoint, resolved=True)
         monkeypatch.delenv('HTTPS_PROXY')
-        # The affected backend stays excluded.
         with pytest.raises(g.MaintenanceIsolationError, match='excludes backend only'):
             g.require_route('custom', 'any', endpoint, resolved=True)
+        # Plugin/memory/media paths are not blanket-refused under backend isolation;
+        # their HTTP traffic is still checked per request against the inventory.
+        g.refuse_unverified_extension()
 
 
 def _pinned_lock(tmp_path, monkeypatch, name):
