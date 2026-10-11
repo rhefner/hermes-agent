@@ -904,6 +904,95 @@ def test_raw_dropped_thread_describes_first_message_of_new_topic():
     assert TelegramAdapter._raw_dropped_thread(SimpleNamespace(message_thread_id=None), "dm", None) is None
 
 
+def test_recover_pins_root_message_to_topic_telegram_just_created(tmp_path):
+    # 2026-10-10 19:23: the user started a message from the main area, Telegram created a topic, but the update
+    # arrived root-shaped. A freshly reported topic beats any stored (possibly deleted) binding and needs no probe.
+    db = SessionDB(db_path=tmp_path / "state.db")
+    _seed_two_topic_bindings(db)
+    runner = _make_runner(session_db=db)
+    calls = _adapter_probe(runner, {"222": False})
+    runner.adapters[Platform.TELEGRAM].recent_dm_topic_created = lambda chat_id: "555"
+
+    assert runner._recover_telegram_topic_thread_id(_make_source()) == "555"
+    assert runner._recover_telegram_topic_thread_id(_make_source(), probe=False) == "555"
+    assert calls == []
+    assert runner._recover_telegram_topic_thread_id(_make_source(thread_id="555")) is None  # already routed
+
+
+def _bare_telegram_adapter():
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+
+    adapter = object.__new__(TelegramAdapter)
+    adapter.platform = Platform.TELEGRAM
+    return adapter
+
+
+def test_forum_topic_created_handler_feeds_recent_dm_topic_created():
+    import asyncio
+
+    adapter = _bare_telegram_adapter()
+    chat = SimpleNamespace(id=208214988, type="private")
+    msg = SimpleNamespace(chat=chat, message_thread_id=20300, forum_topic_created=SimpleNamespace(name="Hi"))
+    update = SimpleNamespace(effective_message=msg, message=msg)
+    assert adapter.recent_dm_topic_created(208214988) is None
+    asyncio.run(adapter._on_forum_topic_created(update, None))
+    assert adapter.recent_dm_topic_created(208214988) == "20300"
+    assert adapter.recent_dm_topic_created("208214988", within=-1.0) is None  # expired window
+    # A forum supergroup topic is not a private-chat topic.
+    group = SimpleNamespace(chat=SimpleNamespace(id=-100123, type="supergroup"), message_thread_id=9)
+    asyncio.run(adapter._on_forum_topic_created(SimpleNamespace(effective_message=group, message=group), None))
+    assert adapter.recent_dm_topic_created(-100123) is None
+
+
+@pytest.mark.parametrize(
+    "edit_error, chat_action_error, expected",
+    [
+        (None, None, True),                                             # no-op edit accepted
+        ("Bad Request: TOPIC_NOT_MODIFIED", None, True),                # live topic, nothing to change
+        ("Bad Request: message thread not found", None, False),         # deleted topic
+        ("Bad Request: TOPIC_ID_INVALID", None, False),
+        ("Bad Request: weird", None, None),                             # inconclusive; sendChatAction success proves nothing
+        ("Bad Request: weird", "Bad Request: message thread not found", False),
+        ("Bad Request: weird", "Bad Request: other", None),
+    ],
+)
+def test_probe_dm_topic_alive_classifies_bot_api_errors(edit_error, chat_action_error, expected):
+    import asyncio
+    import threading
+
+    adapter = _bare_telegram_adapter()
+
+    async def edit_forum_topic(**kw):
+        if edit_error:
+            raise RuntimeError(edit_error)
+
+    async def send_chat_action(**kw):
+        if chat_action_error:
+            raise RuntimeError(chat_action_error)
+
+    adapter._bot = SimpleNamespace(edit_forum_topic=edit_forum_topic, send_chat_action=send_chat_action)
+    loop = asyncio.new_event_loop()
+    threading.Thread(target=loop.run_forever, daemon=True).start()
+    try:
+        adapter._probe_loop = loop
+        assert adapter.probe_dm_topic_alive("208214988", "20256", timeout=5.0) is expected
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+
+
+def test_probe_dm_topic_alive_is_unknown_on_the_loop_thread():
+    import asyncio
+
+    adapter = _bare_telegram_adapter()
+    adapter._bot = SimpleNamespace()
+
+    async def on_loop():
+        adapter._probe_loop = asyncio.get_running_loop()
+        return adapter.probe_dm_topic_alive("1", "2")
+
+    assert asyncio.run(on_loop()) is None
+
+
 def test_recover_preserves_unknown_thread_id_for_new_topic(tmp_path):
     # A newly-created Telegram DM topic arrives with a real, previously-unbound
     # message_thread_id. It must become its own session lane rather than being

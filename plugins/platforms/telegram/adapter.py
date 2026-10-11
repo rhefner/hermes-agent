@@ -1104,11 +1104,20 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
     def _is_thread_not_found_error(error: Exception) -> bool:
         return "thread not found" in str(error).lower()
 
+    @staticmethod
+    def _is_topic_gone_error_text(text: str) -> bool:
+        text = (text or "").lower().replace("_", " ")
+        return "thread not found" in text or "topic id invalid" in text
+
     def probe_dm_topic_alive(self, chat_id: Any, thread_id: Any, timeout: float = 5.0) -> Optional[bool]:
         """Blocking liveness probe for a DM topic, for WORKER threads only (topic recovery runs under
-        ``asyncio.to_thread``): ``sendChatAction`` into ``message_thread_id`` is the lightest Bot API call
-        that rejects a deleted topic. True = alive, False = Telegram said "thread not found", None = unknown
-        (no bot/loop, called on the loop thread, timeout, or any other error): callers fail open on None."""
+        ``asyncio.to_thread``). True = alive, False = Telegram says the topic is gone, None = unknown (no bot/loop,
+        called on the loop thread, timeout, or an inconclusive error): callers fail open on None.
+
+        ``sendChatAction`` alone is NOT authoritative: Telegram accepted it for deleted topics (2026-10-10 19:23, the
+        probe said "alive" and the reply went to dead thread 20256). A no-op ``editForumTopic`` (no name/icon) is
+        rejected with TOPIC_NOT_MODIFIED on a live topic and "thread not found" on a deleted one. Every verdict is
+        logged at INFO with the redacted API error so the real Bot API behaviour is visible in the logs."""
         bot, loop = self._bot, getattr(self, "_probe_loop", None)
         if not bot or loop is None or not loop.is_running():
             return None
@@ -1117,15 +1126,56 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             return None  # on the loop thread: blocking on our own loop would deadlock
         except RuntimeError:
             pass
+        chat_arg = normalize_telegram_chat_id(chat_id)
 
-        async def _go() -> None:
-            await bot.send_chat_action(
-                chat_id=normalize_telegram_chat_id(chat_id), action="typing", message_thread_id=int(thread_id))
+        async def _go() -> tuple:
+            try:
+                await bot.edit_forum_topic(chat_id=chat_arg, message_thread_id=int(thread_id))
+                return True, "editForumTopic accepted (no-op)"
+            except Exception as e:  # noqa: BLE001 - classify by text, PTB error classes vary
+                text = str(e)
+                if "not modified" in text.lower().replace("_", " "):
+                    return True, "editForumTopic: " + _redact_telegram_error_text(e)
+                if self._is_topic_gone_error_text(text):
+                    return False, "editForumTopic: " + _redact_telegram_error_text(e)
+                first = "editForumTopic: " + _redact_telegram_error_text(e)
+            try:  # inconclusive: sendChatAction can still prove the thread is gone, never that it is alive
+                await bot.send_chat_action(chat_id=chat_arg, action="typing", message_thread_id=int(thread_id))
+                return None, first + "; sendChatAction accepted (not authoritative)"
+            except Exception as e:  # noqa: BLE001
+                if self._is_topic_gone_error_text(str(e)):
+                    return False, "sendChatAction: " + _redact_telegram_error_text(e)
+                return None, first + "; sendChatAction: " + _redact_telegram_error_text(e)
+
         try:
-            asyncio.run_coroutine_threadsafe(_go(), loop).result(timeout)
-        except Exception as e:
-            return False if self._is_thread_not_found_error(e) else None
-        return True
+            verdict, detail = asyncio.run_coroutine_threadsafe(_go(), loop).result(timeout)
+        except Exception as e:  # noqa: BLE001 - timeout etc.
+            verdict, detail = None, "probe error: " + _redact_telegram_error_text(e)
+        logger.info("[%s] DM topic probe chat=%s thread=%s -> %s (%s)", self.name, chat_id, thread_id,
+                    {True: "alive", False: "GONE", None: "unknown"}[verdict], detail[:200])
+        return verdict
+
+    def recent_dm_topic_created(self, chat_id: Any, within: float = 30.0) -> Optional[str]:
+        """Thread id of a private-chat topic Telegram reported created for ``chat_id`` in the last ``within``
+        seconds (``forum_topic_created`` service message), else None. Safe from any thread."""
+        entry = (self.__dict__.get("_recent_dm_topics") or {}).get(str(chat_id))
+        if not entry or time.monotonic() - entry[1] > within:
+            return None
+        return entry[0]
+
+    async def _on_forum_topic_created(self, update, context) -> None:
+        """Remember a topic created in a private chat: the user's very next root-shaped message belongs to it."""
+        try:
+            msg = getattr(update, "effective_message", None) or getattr(update, "message", None)
+            chat = getattr(msg, "chat", None)
+            thread = getattr(msg, "message_thread_id", None)
+            if chat is None or self._chat_type_str(chat) != "private" or thread is None:
+                return
+            self.__dict__.setdefault("_recent_dm_topics", {})[str(chat.id)] = (str(thread), time.monotonic())
+            logger.info("[%s] DM topic created by Telegram: chat=%s thread=%s name=%r", self.name, chat.id, thread,
+                        getattr(getattr(msg, "forum_topic_created", None), "name", None))
+        except Exception:
+            logger.debug("[%s] forum_topic_created handler failed", self.name, exc_info=True)
 
     def _prune_stale_dm_topic_binding(self, chat_id: Any, thread_id: Any, *, metadata: Optional[dict[str, Any]] = None) -> None:
         """Drop the stale ``telegram_dm_topic_bindings`` row for a topic Telegram confirmed deleted, else
@@ -2919,6 +2969,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         # Inline command picker; inert until the owner enables inline mode via BotFather /setinline.
         app.add_handler(InlineQueryHandler(self._handle_inline_query))
         # gateway_platform_event observer: group 99 observes alongside, never displaces, core handlers.
+        app.add_handler(TelegramMessageHandler(filters.StatusUpdate.FORUM_TOPIC_CREATED, self._on_forum_topic_created), group=98)
         app.add_handler(TypeHandler(Update, self._on_platform_update), group=99)
         # Everything appended above is core; a late plugin re-wire must land BEFORE these (#87770).
         if isinstance(table, dict):
@@ -7118,6 +7169,14 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             is_bot=bool(getattr(user, "is_bot", False)) if user else False)
         reply_to_id, reply_to_text = self._reply_context(message)
         raw_thread = self._raw_dropped_thread(message, chat_type, thread_id_str)
+        if chat_type == "dm" and thread_id_str is None and raw_thread is None:
+            stamps = self.__dict__.setdefault("_dm_root_diag_ts", {})
+            if time.monotonic() - stamps.get(chat.id, -60.0) >= 10.0:  # rate limited: every root DM message in a non-topic chat
+                stamps[chat.id] = time.monotonic()
+                logger.info(
+                    "[%s] Telegram DM update has NO message_thread_id (is_topic_message=%s chat.is_forum=%s api_kwargs=%s "
+                    "chat=%s msg=%s) — root-lobby shaped", self.name, getattr(message, "is_topic_message", None),
+                    getattr(chat, "is_forum", None), sorted((getattr(message, "api_kwargs", None) or {}))[:8], chat.id, message.message_id)
         if raw_thread is not None:
             (logger.debug if raw_thread["reply_to_message"] else logger.info)(  # reply-UI anchors are routine
                 "[%s] Telegram DM update carried message_thread_id=%s but it was not routed as a topic "

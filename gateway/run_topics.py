@@ -224,6 +224,14 @@ class GatewayTopicThreadsMixin:
         inbound = str(source.thread_id or "")
         if inbound and inbound not in self._TELEGRAM_GENERAL_TOPIC_IDS:
             return None
+        # Telegram creates a topic when the user starts a message from the main area; if it just told us so, that
+        # topic is the lane for this root-shaped message (and certainly alive) — newer than any stored binding.
+        fresh = getattr(self._delivery_adapter_for(source), "recent_dm_topic_created", None)
+        fresh_thread = fresh(str(source.chat_id)) if callable(fresh) else None
+        if isinstance(fresh_thread, str) and fresh_thread and fresh_thread != inbound:
+            logger.info("telegram topic recovery: pinning root-shaped message to just-created topic chat=%s thread=%s",
+                        source.chat_id, fresh_thread)
+            return fresh_thread
         session_db = self._sync_session_db()
         if session_db is None:
             return None
