@@ -777,6 +777,133 @@ def _seed_two_topic_bindings(session_db):
     )
 
 
+def _adapter_probe(runner, verdicts):
+    """Make the runner's fake adapter answer liveness probes from ``{thread_id: True|False|None}``."""
+    calls = []
+
+    def probe(chat_id, thread_id):
+        calls.append(str(thread_id))
+        return verdicts.get(str(thread_id))
+
+    runner.adapters[Platform.TELEGRAM].probe_dm_topic_alive = probe
+    return calls
+
+
+def test_recover_skips_and_prunes_dead_newest_topic(tmp_path):
+    # Richard 2026-10-10: the newest binding (222) was a deleted topic, so a root message was pinned into it
+    # and every send hit "Message thread not found". Dead candidates are pruned and the next live one wins.
+    db = SessionDB(db_path=tmp_path / "state.db")
+    _seed_two_topic_bindings(db)
+    runner = _make_runner(session_db=db)
+    calls = _adapter_probe(runner, {"222": False, "111": True})
+
+    assert runner._recover_telegram_topic_thread_id(_make_source()) == "111"
+    assert calls == ["222", "111"]
+    remaining = {b["thread_id"] for b in db.list_telegram_topic_bindings_for_chat(chat_id="208214988")}
+    assert remaining == {"111"}
+
+
+def test_recover_falls_back_to_root_when_every_topic_is_dead(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    _seed_two_topic_bindings(db)
+    runner = _make_runner(session_db=db)
+    _adapter_probe(runner, {"222": False, "111": False})
+
+    assert runner._recover_telegram_topic_thread_id(_make_source()) is None
+    assert db.list_telegram_topic_bindings_for_chat(chat_id="208214988") == []
+
+
+def test_recover_fails_open_when_probe_is_unknown(tmp_path):
+    # None = no bot / on the loop thread / timeout: keep the old behaviour (pin newest), never prune.
+    db = SessionDB(db_path=tmp_path / "state.db")
+    _seed_two_topic_bindings(db)
+    runner = _make_runner(session_db=db)
+    _adapter_probe(runner, {})
+
+    assert runner._recover_telegram_topic_thread_id(_make_source()) == "222"
+    assert len(db.list_telegram_topic_bindings_for_chat(chat_id="208214988")) == 2
+
+
+def test_recover_caches_alive_verdict_and_loop_path_only_trusts_cache(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    _seed_two_topic_bindings(db)
+    runner = _make_runner(session_db=db)
+    calls = _adapter_probe(runner, {"222": True})
+
+    # Event-loop caller (probe=False) cannot block on the Bot API: nothing verified yet -> stay in the lobby.
+    assert runner._recover_telegram_topic_thread_id(_make_source(), probe=False) is None
+    assert calls == []
+    assert runner._recover_telegram_topic_thread_id(_make_source()) == "222"
+    assert runner._recover_telegram_topic_thread_id(_make_source()) == "222"
+    assert calls == ["222"]  # second call served from the TTL cache
+    assert runner._recover_telegram_topic_thread_id(_make_source(), probe=False) == "222"
+
+
+def test_recover_probes_at_most_three_dead_candidates(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    verdicts = {}
+    for i in range(5):
+        tid = str(100 + i)
+        db.create_session(session_id=f"s{i}", source="telegram", user_id="208214988")
+        src = _make_source(thread_id=tid)
+        db.bind_telegram_topic(chat_id=src.chat_id, thread_id=tid, user_id=src.user_id,
+                               session_key=build_session_key(src), session_id=f"s{i}")
+        verdicts[tid] = False
+    runner = _make_runner(session_db=db)
+    calls = _adapter_probe(runner, verdicts)
+
+    assert runner._recover_telegram_topic_thread_id(_make_source()) is None
+    assert len(calls) == 3
+
+
+def test_topic_pin_blocked_when_update_carried_its_own_thread_id():
+    from gateway.platforms.base import topic_pin_blocked_by_raw_thread
+
+    raw = {"message_thread_id": 20300, "is_topic_message": False, "reply_to_message": False}
+    # First message of a topic Telegram just created: its raw id differs from the old binding -> do not pin.
+    assert topic_pin_blocked_by_raw_thread({"telegram_thread_raw": raw}, "20216") is True
+    # Same id as the binding -> consistent, pin is harmless.
+    assert topic_pin_blocked_by_raw_thread({"telegram_thread_raw": raw}, "20300") is False
+    # A reply-UI anchor keeps upstream's cross-topic pin (#cross-topic Reply leak).
+    assert topic_pin_blocked_by_raw_thread(
+        {"telegram_thread_raw": {**raw, "reply_to_message": True}}, "20216") is False
+    # No raw thread information at all (the normal lobby message).
+    assert topic_pin_blocked_by_raw_thread({}, "20216") is False
+    assert topic_pin_blocked_by_raw_thread(None, "20216") is False
+
+
+def test_apply_topic_recovery_respects_raw_thread_block(tmp_path):
+    from gateway.platforms.base import BasePlatformAdapter
+
+    a = SimpleNamespace(name="telegram", _topic_recovery_fn=lambda source, **kw: "20216")
+    apply = lambda event, **kw: BasePlatformAdapter._apply_topic_recovery(a, event, **kw)  # noqa: E731
+    blocked = _make_event("hi")
+    blocked.metadata = {"telegram_thread_raw": {"message_thread_id": 20300, "is_topic_message": False, "reply_to_message": False}}
+    apply(blocked)
+    assert blocked.source.thread_id is None
+
+    plain = _make_event("hi")
+    apply(plain)
+    assert plain.source.thread_id == "20216"
+
+    legacy = _make_event("hi")
+    a._topic_recovery_fn = lambda source: "7"  # hook without the probe kwarg still works on the loop path
+    apply(legacy, probe=False)
+    assert legacy.source.thread_id == "7"
+
+
+def test_raw_dropped_thread_describes_first_message_of_new_topic():
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+
+    msg = SimpleNamespace(message_thread_id=20300, is_topic_message=False, reply_to_message=None, forum_topic_created=None)
+    assert TelegramAdapter._raw_dropped_thread(msg, "dm", None) == {
+        "message_thread_id": 20300, "is_topic_message": False, "reply_to_message": False, "forum_topic_created": False}
+    assert TelegramAdapter._raw_dropped_thread(msg, "dm", "20300") is None  # routed normally
+    assert TelegramAdapter._raw_dropped_thread(msg, "group", None) is None
+    assert TelegramAdapter._raw_dropped_thread(SimpleNamespace(message_thread_id=None), "dm", None) is None
+
+
 def test_recover_preserves_unknown_thread_id_for_new_topic(tmp_path):
     # A newly-created Telegram DM topic arrives with a real, previously-unbound
     # message_thread_id. It must become its own session lane rather than being

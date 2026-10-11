@@ -23,7 +23,7 @@ from contextlib import nullcontext, suppress
 from contextvars import copy_context
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
-from gateway.platforms.base import BasePlatformAdapter, ProcessingOutcome
+from gateway.platforms.base import BasePlatformAdapter, ProcessingOutcome, topic_pin_blocked_by_raw_thread
 from gateway.platforms.event import MessageEvent
 from gateway.response_filters import (
     display_kind_for_event, is_machinery_display_kind, reply_expected_metadata, silence_allowed,
@@ -412,6 +412,8 @@ class GatewayTurnMixin:
         expected_session_key = str(event_metadata.get("gateway_session_key") or "").strip()
         recovered = (await asyncio.to_thread(self._recover_telegram_topic_thread_id, source)
                      if not expected_session_key else None)
+        if recovered is not None and topic_pin_blocked_by_raw_thread(event_metadata, recovered):
+            recovered = None
         if recovered is not None:
             logger.info(
                 "telegram topic recovery: chat=%s user=%s %r -> %s",

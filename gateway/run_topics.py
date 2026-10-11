@@ -163,10 +163,59 @@ class GatewayTopicThreadsMixin:
         except Exception:
             logger.debug("telegram topic binding refresh failed (%s)", reason, exc_info=True)
 
-    def _recover_telegram_topic_thread_id(self, source: SessionSource) -> Optional[str]:
+    _TELEGRAM_TOPIC_ALIVE_TTL_S = 120.0
+    _TELEGRAM_TOPIC_PROBE_MAX = 3
+
+    def _telegram_topic_probe(self, source: SessionSource, thread_id: str) -> Optional[bool]:
+        """True/False = the topic is alive/deleted per Telegram; None = unknown (fail open)."""
+        try:
+            probe = getattr(self._delivery_adapter_for(source), "probe_dm_topic_alive", None)
+            result = probe(str(source.chat_id), str(thread_id)) if callable(probe) else None
+        except Exception:
+            logger.debug("topic liveness probe failed", exc_info=True)
+            return None
+        return result if isinstance(result, bool) else None
+
+    def _prune_dead_telegram_topic_binding(self, source: SessionSource, session_db, thread_id: str) -> None:
+        """Drop the binding of a topic Telegram says no longer exists (same effect as the send-fallback prune)."""
+        try:
+            removed = session_db.delete_telegram_topic_binding(
+                chat_id=str(source.chat_id), thread_id=str(thread_id), profile_name=self._telegram_topic_profile_name(source))
+        except Exception:
+            logger.debug("dead topic binding prune failed", exc_info=True)
+            return
+        if removed:
+            logger.info("telegram topic recovery: pruned dead topic binding chat=%s thread=%s (probe: thread not found)",
+                        source.chat_id, thread_id)
+
+    def _telegram_topic_candidate_alive(self, source: SessionSource, session_db, thread_id: str, *, probe: bool) -> bool:
+        """Whether recovery may pin to ``thread_id``. A verified-alive verdict is cached for a short TTL; a dead
+        one prunes the binding. Unknown fails open when probing is allowed, closed when it is not (loop thread)."""
+        cache = self.__dict__.setdefault("_telegram_topic_alive_until", {})
+        key = (str(source.chat_id), str(thread_id))
+        now = time.monotonic()
+        if cache.get(key, 0.0) > now:
+            return True
+        if not probe:
+            return False
+        verdict = self._telegram_topic_probe(source, thread_id)
+        if verdict is False:
+            cache.pop(key, None)
+            self._prune_dead_telegram_topic_binding(source, session_db, thread_id)
+            return False
+        if verdict is True:
+            cache[key] = now + self._TELEGRAM_TOPIC_ALIVE_TTL_S
+        return True
+
+    def _recover_telegram_topic_thread_id(self, source: SessionSource, *, probe: bool = True) -> Optional[str]:
         """Pin lobby-shaped topic-mode DM replies (missing ``message_thread_id`` or General) to the
-        user's most-recent bound topic. Never rewrite a non-lobby, unbound thread id: a brand-new DM
-        topic is also "unknown" until its first message is recorded. None = leave the source alone."""
+        user's most-recent LIVE bound topic. Never rewrite a non-lobby, unbound thread id: a brand-new DM
+        topic is also "unknown" until its first message is recorded. None = leave the source alone.
+
+        Candidates are tried newest-first (at most ``_TELEGRAM_TOPIC_PROBE_MAX``): each is probed with a cheap
+        Bot API call, a deleted topic is pruned and skipped, and when none is alive the message stays in the
+        root lobby instead of being sent into a dead thread. ``probe=False`` (event-loop callers, which cannot
+        block on the Bot API) only trusts candidates verified alive within the last ``_TELEGRAM_TOPIC_ALIVE_TTL_S``."""
         if (
             not self._is_telegram_dm(source) or not source.chat_id or not source.user_id
             or not self._telegram_topic_mode_enabled(source)
@@ -185,10 +234,18 @@ class GatewayTopicThreadsMixin:
         except Exception:
             logger.debug("topic-recover: read failed", exc_info=True)
             return None
+        tried = 0
         for b in bindings or ():  # newest-first
-            if str(b.get("user_id") or "") == str(source.user_id):
-                recovered = str(b.get("thread_id") or "")
-                return recovered if recovered and recovered != inbound else None
+            if str(b.get("user_id") or "") != str(source.user_id):
+                continue
+            recovered = str(b.get("thread_id") or "")
+            if not recovered or recovered == inbound:
+                return None
+            if self._telegram_topic_candidate_alive(source, session_db, recovered, probe=probe):
+                return recovered
+            tried += 1
+            if not probe or tried >= self._TELEGRAM_TOPIC_PROBE_MAX:
+                break
         return None
 
     # ── Telegram topic mode: /topic activation helpers ──────────────────────────────────────

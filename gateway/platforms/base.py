@@ -1914,6 +1914,23 @@ def _lazy_attr(obj: Any, name: str, factory: Callable[[], Any]) -> Any:
 _strip_media_directives = _strip_media_tag_directives
 
 
+def topic_pin_blocked_by_raw_thread(metadata: Optional[dict], recovered: Any) -> bool:
+    """True when a Telegram DM update carried its own ``message_thread_id`` that the adapter dropped
+    (not flagged ``is_topic_message``), it is NOT a reply-UI anchor (no ``reply_to_message``), and it
+    differs from the topic recovery wants to pin it to. Such an update is the first message of a
+    topic Telegram just created, so pinning it to the newest old binding posts it into the wrong lane
+    (Richard's 2026-10-10 17:50 "empty topic" report). Replies keep the upstream cross-topic pin."""
+    raw = (metadata or {}).get("telegram_thread_raw") if isinstance(metadata, dict) else None
+    if not isinstance(raw, dict) or raw.get("message_thread_id") is None or raw.get("reply_to_message"):
+        return False
+    if str(raw["message_thread_id"]) == str(recovered):
+        return False
+    logger.info(
+        "telegram topic re-pin SKIPPED: update carried its own message_thread_id=%s (is_topic_message=%s) "
+        "!= binding %s; leaving it in the root lobby", raw["message_thread_id"], raw.get("is_topic_message"), recovered)
+    return True
+
+
 class BasePlatformAdapter(ABC):
     """Base class for platform adapters: connect/auth, receive, send, handle media."""
 
@@ -2373,21 +2390,35 @@ class BasePlatformAdapter(ABC):
         it."""
         self._topic_recovery_fn = fn
 
-    def _apply_topic_recovery(self, event: MessageEvent) -> None:
-        """Rewrite ``event.source.thread_id`` in place if the hook returns one."""
+    def _apply_topic_recovery(self, event: MessageEvent, probe: bool = True) -> None:
+        """Rewrite ``event.source.thread_id`` in place if the hook returns one.
+
+        ``probe=False`` is for callers on the event-loop thread (text-batch keying): the hook may then
+        only pin to a topic already verified alive, since a liveness probe needs a thread that can block.
+        """
         recover = getattr(self, "_topic_recovery_fn", None)
         source = getattr(event, "source", None)
         if recover is None or source is None:
             return
         try:
-            recovered = recover(source)
+            try:
+                recovered = recover(source) if probe else recover(source, probe=False)
+            except TypeError:
+                if probe:
+                    raise
+                recovered = recover(source)  # hook predates the probe kwarg
             if recovered is None or str(recovered) == str(source.thread_id or ""):
+                return
+            if topic_pin_blocked_by_raw_thread(getattr(event, "metadata", None), recovered):
                 return
         except Exception:
             logger.debug("topic recovery hook failed", exc_info=True)
             return
         try:
             from gateway.session_identity import replace_source
+            logger.info(
+                "[%s] telegram topic re-pin: chat=%s inbound_thread=%r -> %s raw=%s",
+                self.name, source.chat_id, source.thread_id, recovered, (getattr(event, "metadata", None) or {}).get("telegram_thread_raw"))
             event.source = replace_source(source, thread_id=str(recovered))  # keeps the pinned identity
         except Exception:
             logger.debug("topic recovery rewrite failed", exc_info=True)

@@ -1104,6 +1104,29 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
     def _is_thread_not_found_error(error: Exception) -> bool:
         return "thread not found" in str(error).lower()
 
+    def probe_dm_topic_alive(self, chat_id: Any, thread_id: Any, timeout: float = 5.0) -> Optional[bool]:
+        """Blocking liveness probe for a DM topic, for WORKER threads only (topic recovery runs under
+        ``asyncio.to_thread``): ``sendChatAction`` into ``message_thread_id`` is the lightest Bot API call
+        that rejects a deleted topic. True = alive, False = Telegram said "thread not found", None = unknown
+        (no bot/loop, called on the loop thread, timeout, or any other error): callers fail open on None."""
+        bot, loop = self._bot, getattr(self, "_probe_loop", None)
+        if not bot or loop is None or not loop.is_running():
+            return None
+        try:
+            asyncio.get_running_loop()
+            return None  # on the loop thread: blocking on our own loop would deadlock
+        except RuntimeError:
+            pass
+
+        async def _go() -> None:
+            await bot.send_chat_action(
+                chat_id=normalize_telegram_chat_id(chat_id), action="typing", message_thread_id=int(thread_id))
+        try:
+            asyncio.run_coroutine_threadsafe(_go(), loop).result(timeout)
+        except Exception as e:
+            return False if self._is_thread_not_found_error(e) else None
+        return True
+
     def _prune_stale_dm_topic_binding(self, chat_id: Any, thread_id: Any, *, metadata: Optional[dict[str, Any]] = None) -> None:
         """Drop the stale ``telegram_dm_topic_bindings`` row for a topic Telegram confirmed deleted, else
         ``_recover_telegram_topic_thread_id`` keeps steering inbound to the dead thread. Best-effort.
@@ -3159,6 +3182,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         queued updates, else every message sent during the outage is lost). Webhook env:
         TELEGRAM_WEBHOOK_URL, TELEGRAM_WEBHOOK_PORT (8443), TELEGRAM_WEBHOOK_HOST,
         TELEGRAM_WEBHOOK_SECRET."""
+        self._probe_loop = asyncio.get_running_loop()  # for probe_dm_topic_alive() from worker threads
         # Explicit connect() is the only operation allowed to reopen polling after a completed teardown.
         self._polling_teardown_started = False
         self._webhook_mode = False  # re-evaluated on every explicit connection
@@ -6533,7 +6557,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
 
     def _text_batch_key(self, event: MessageEvent) -> str:
         """Session-scoped batching key; topic recovery first so DM-topic batches coalesce on the recovered lane."""
-        self._apply_topic_recovery(event)
+        self._apply_topic_recovery(event, probe=False)  # on the loop thread: verified-alive topics only
         return super()._text_batch_key(event)
 
     def _enqueue_text_event(self, event: MessageEvent) -> None:
@@ -7093,6 +7117,13 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             user_name=user_name, thread_id=thread_id_str, chat_topic=chat_topic, message_id=str(message.message_id),
             is_bot=bool(getattr(user, "is_bot", False)) if user else False)
         reply_to_id, reply_to_text = self._reply_context(message)
+        raw_thread = self._raw_dropped_thread(message, chat_type, thread_id_str)
+        if raw_thread is not None:
+            (logger.debug if raw_thread["reply_to_message"] else logger.info)(  # reply-UI anchors are routine
+                "[%s] Telegram DM update carried message_thread_id=%s but it was not routed as a topic "
+                "(is_topic_message=%s reply_to_message=%s forum_topic_created=%s chat=%s msg=%s) — root-lobby shaped",
+                self.name, raw_thread["message_thread_id"], raw_thread["is_topic_message"], raw_thread["reply_to_message"],
+                raw_thread["forum_topic_created"], chat.id, message.message_id)
         from gateway.platforms.base import resolve_channel_prompt  # per-channel/topic ephemeral prompt
         from plugins.platforms.telegram.telegram_context import group_identity_prompt
         _chat_id_str = str(chat.id)
@@ -7102,7 +7133,23 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             message_id=str(message.message_id), platform_update_id=update_id,
             reply_to_message_id=reply_to_id, reply_to_text=reply_to_text, auto_skill=topic_skill,
             channel_prompt=group_identity_prompt(self, message, channel_prompt),
-            timestamp=message.date)
+            timestamp=message.date, metadata={"telegram_thread_raw": raw_thread} if raw_thread else {})
+
+    @staticmethod
+    def _raw_dropped_thread(message: Message, chat_type: str, thread_id_str: Optional[str]) -> Optional[dict]:
+        """Raw thread facts for a private-chat update whose ``message_thread_id`` was dropped by
+        ``_effective_message_thread_id`` (``is_topic_message`` false), else None. Diagnostic + input to
+        ``topic_pin_blocked_by_raw_thread``: a dropped id is either a reply-UI anchor or the first message
+        of a topic Telegram just created."""
+        raw = getattr(message, "message_thread_id", None)
+        if chat_type != "dm" or raw is None or thread_id_str is not None:
+            return None
+        return {
+            "message_thread_id": raw,
+            "is_topic_message": bool(getattr(message, "is_topic_message", False)),
+            "reply_to_message": getattr(message, "reply_to_message", None) is not None,
+            "forum_topic_created": getattr(message, "forum_topic_created", None) is not None,
+        }
 
     # -- Message reactions (processing lifecycle) --
 
